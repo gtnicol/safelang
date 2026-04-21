@@ -1,0 +1,32 @@
+program file_io;
+import io;
+import std;
+import file { read, write, exists, delete, ReadResult, WriteResult };
+
+io:println("=== File I/O Demo ===");
+
+string path = "/tmp/safe_file_io_demo.txt";
+
+// Write using one-shot convenience API
+file:write(path, "Hello from SAFE!\nLine 2\nLine 3");
+io:println("Written to: " + path);
+
+io:println("Exists: " + std:str(file:exists(path)));
+
+// Read using one-shot convenience API
+ReadResult content = file:read(path);
+int dummy = case content of {
+    Ok(s): do { io:println("Content: " + s); 0 };
+    Err(e): do { io:println("Read error: " + e); 0 };
+};
+
+// Overwrite with new content
+file:write(path, "Line A\nLine B\nLine C\nLine D");
+ReadResult updated = file:read(path);
+dummy = case updated of {
+    Ok(s): do { io:println("Updated: " + s); 0 };
+    Err(e): do { io:println("Read error: " + e); 0 };
+};
+
+file:delete(path);
+io:println("Deleted. Exists: " + std:str(file:exists(path)));

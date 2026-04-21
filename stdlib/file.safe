@@ -1,0 +1,35 @@
+module file;
+
+// File handle struct
+public type File {
+    public const int id;
+    public const string path;
+}
+
+// Result enums
+public enum OpenResult { Ok(File), Err(string) }
+public enum ReadResult { Ok(string), Err(string) }
+public enum WriteResult { Done, Err(string) }
+public enum LinesResult { Ok(list<string>), Err(string) }
+
+// Handle-based operations
+public OpenResult open(string path, string mode) { return fileopen(path, mode); }
+public void close(File f) { fileclose(f.id); }
+public ReadResult load(File f) { return fileread(f.id); }
+public WriteResult save(File f, string content) { return filewrite(f.id, content); }
+public LinesResult lines(File f) { return filereadlines(f.id); }
+public boolean valid(File f) { return filevalid(f.id); }
+
+// Path-based convenience (one-shot open + op + close)
+public ReadResult read(string path) { return fileload(path); }
+public WriteResult write(string path, string content) { return filesave(path, content); }
+
+// Path-based utilities (kept from old API)
+public boolean exists(string path) { return exists(path); }
+public boolean delete(string path) { return delete(path); }
+
+// Directory operations
+public list<string> listdir(string path) { return listdir(path); }
+public boolean mkdir(string path) { return mkdir(path); }
+public boolean rmdir(string path) { return rmdir(path); }
+public boolean isdir(string path) { return isdir(path); }

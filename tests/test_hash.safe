@@ -1,0 +1,41 @@
+program test_hash;
+import std;
+import binary;
+import hash;
+import test;
+
+int x = 0;
+
+test:suite("hash", [
+    fn() -> do {
+        bytes data = binary:encode("hello");
+        int h1 = hash:fnv(data);
+        int h2 = hash:fnv(data);
+        int h3 = hash:fnv(binary:encode("world"));
+        test:suite("fnv", [
+            fn() -> test:equal(std:str(h1), std:str(h2), "fnv deterministic"),
+            fn() -> test:truthy(h1 != h3, "fnv different inputs differ")
+        ]);
+        int c1 = hash:crc(data);
+        int c2 = hash:crc(data);
+        int c3 = hash:crc(binary:encode("world"));
+        test:suite("crc", [
+            fn() -> test:equal(std:str(c1), std:str(c2), "crc deterministic"),
+            fn() -> test:truthy(c1 != c3, "crc different inputs differ")
+        ]);
+        int m1 = hash:murmur(data);
+        int m2 = hash:murmur(data);
+        int m3 = hash:murmur(binary:encode("world"));
+        test:suite("murmur", [
+            fn() -> test:equal(std:str(m1), std:str(m2), "murmur deterministic"),
+            fn() -> test:truthy(m1 != m3, "murmur different inputs differ")
+        ]);
+        int t1 = hash:text("hello");
+        int t2 = hash:text("hello");
+        test:suite("text convenience", [
+            fn() -> test:equal(std:str(t1), std:str(t2), "text deterministic")
+        ])
+    }
+]);
+
+test:done();

@@ -1,0 +1,293 @@
+program test_json;
+import std;
+import file { write, delete };
+import json;
+import test;
+
+int x = 0;
+
+test:suite("parse null", [
+    fn() -> do {
+        ParseResult r = json:parse("null");
+        test:equal(case r of { Ok(j): json:kind(j); Err(e): e; }, "null", "null kind");
+        test:equal(case r of { Ok(j): json:format(j); Err(e): e; }, "null", "null format");
+        test:truthy(case r of { Ok(j): json:blank(j); Err(e): false; }, "null blank")
+    }
+]);
+
+test:suite("parse booleans", [
+    fn() -> do {
+        ParseResult r1 = json:parse("true");
+        ParseResult r2 = json:parse("false");
+        test:equal(case r1 of { Ok(j): json:format(j); Err(e): e; }, "true", "true format");
+        test:equal(case r2 of { Ok(j): json:format(j); Err(e): e; }, "false", "false format");
+        test:equal(case r1 of { Ok(j): json:kind(j); Err(e): e; }, "boolean", "bool kind")
+    }
+]);
+
+test:suite("parse integers", [
+    fn() -> test:equal(case json:parse("0") of { Ok(j): json:format(j); Err(e): e; }, "0", "zero"),
+    fn() -> test:equal(case json:parse("42") of { Ok(j): json:format(j); Err(e): e; }, "42", "positive"),
+    fn() -> test:equal(case json:parse("-7") of { Ok(j): json:format(j); Err(e): e; }, "-7", "negative"),
+    fn() -> test:equal(case json:parse("42") of { Ok(j): json:kind(j); Err(e): e; }, "integer", "kind"),
+    fn() -> test:equal(case json:parse("1000000") of { Ok(j): json:format(j); Err(e): e; }, "1000000", "large")
+]);
+
+test:suite("parse floats", [
+    fn() -> test:equal(case json:parse("3.14") of { Ok(j): json:kind(j); Err(e): e; }, "float", "decimal kind"),
+    fn() -> test:equal(case json:parse("-0.5") of { Ok(j): json:format(j); Err(e): e; }, "-0.5", "negative float"),
+    fn() -> test:equal(case json:parse("1e10") of { Ok(j): json:kind(j); Err(e): e; }, "float", "sci notation kind"),
+    fn() -> test:equal(case json:parse("2.5e-3") of { Ok(j): json:kind(j); Err(e): e; }, "float", "sci with decimal")
+]);
+
+test:suite("parse strings", [
+    fn() -> test:equal(case json:parse("\"hello\"") of { Ok(j): json:format(j); Err(e): e; }, "\"hello\"", "simple string"),
+    fn() -> test:equal(case json:parse("\"\"") of { Ok(j): json:format(j); Err(e): e; }, "\"\"", "empty string"),
+    fn() -> test:equal(case json:parse("\"hello\"") of { Ok(j): json:kind(j); Err(e): e; }, "string", "string kind"),
+    fn() -> do {
+        ParseResult r = json:parse("\"hello\\nworld\"");
+        test:equal(case r of { Ok(j): json:kind(j); Err(e): e; }, "string", "escaped newline")
+    },
+    fn() -> do {
+        ParseResult r = json:parse("\"tab\\there\"");
+        test:equal(case r of { Ok(j): json:kind(j); Err(e): e; }, "string", "escaped tab")
+    },
+    fn() -> do {
+        ParseResult r = json:parse("\"a\\\"b\"");
+        test:equal(case r of { Ok(j): json:kind(j); Err(e): e; }, "string", "escaped quote")
+    }
+]);
+
+test:suite("parse arrays", [
+    fn() -> test:equal(case json:parse("[]") of { Ok(j): json:format(j); Err(e): e; }, "[]", "empty array"),
+    fn() -> test:equal(case json:parse("[1]") of { Ok(j): json:format(j); Err(e): e; }, "[1]", "single element"),
+    fn() -> test:equal(case json:parse("[1,2,3]") of { Ok(j): json:format(j); Err(e): e; }, "[1,2,3]", "multiple elements"),
+    fn() -> test:equal(case json:parse("[[1],[2]]") of { Ok(j): json:format(j); Err(e): e; }, "[[1],[2]]", "nested arrays"),
+    fn() -> test:equal(case json:parse("[1,2,3]") of { Ok(j): json:kind(j); Err(e): e; }, "array", "array kind"),
+    fn() -> do {
+        ParseResult r = json:parse("[1,\"two\",true,null]");
+        test:equal(case r of { Ok(j): json:format(j); Err(e): e; }, "[1,\"two\",true,null]", "mixed types")
+    }
+]);
+
+test:suite("parse objects", [
+    fn() -> test:equal(case json:parse("{}") of { Ok(j): json:format(j); Err(e): e; }, "{}", "empty object"),
+    fn() -> test:equal(case json:parse("{\"a\":1}") of { Ok(j): json:format(j); Err(e): e; }, "{\"a\":1}", "single property"),
+    fn() -> test:equal(case json:parse("{\"a\":1,\"b\":2}") of { Ok(j): json:format(j); Err(e): e; }, "{\"a\":1,\"b\":2}", "multiple properties"),
+    fn() -> test:equal(case json:parse("{\"a\":1}") of { Ok(j): json:kind(j); Err(e): e; }, "object", "object kind"),
+    fn() -> do {
+        ParseResult r = json:parse("{\"n\":null,\"b\":true,\"s\":\"hi\",\"i\":1}");
+        test:equal(case r of { Ok(j): json:format(j); Err(e): e; }, "{\"n\":null,\"b\":true,\"s\":\"hi\",\"i\":1}", "mixed values")
+    }
+]);
+
+test:suite("parse nested structures", [
+    fn() -> do {
+        ParseResult r = json:parse("{\"items\":[1,2],\"name\":\"test\"}");
+        test:equal(case r of { Ok(j): json:format(j); Err(e): e; }, "{\"items\":[1,2],\"name\":\"test\"}", "object with array");
+        Json obj = case r of { Ok(j): j; Err(e): Null; };
+        test:equal(json:format(json:get(obj, "name")), "\"test\"", "nested get string");
+        test:equal(json:format(json:at(json:get(obj, "items"), 0)), "1", "nested at through get")
+    }
+]);
+
+test:suite("parse whitespace", [
+    fn() -> test:equal(case json:parse("  42  ") of { Ok(j): json:format(j); Err(e): e; }, "42", "leading trailing spaces"),
+    fn() -> test:equal(case json:parse("  { \"a\" : 1 , \"b\" : 2 }  ") of { Ok(j): json:format(j); Err(e): e; }, "{\"a\":1,\"b\":2}", "spaces in object"),
+    fn() -> test:equal(case json:parse("  [ 1 , 2 , 3 ]  ") of { Ok(j): json:format(j); Err(e): e; }, "[1,2,3]", "spaces in array")
+]);
+
+test:suite("parse errors", [
+    fn() -> do {
+        ParseResult r = json:parse("");
+        test:truthy(case r of { Ok(j): false; Err(e): true; }, "empty input")
+    },
+    fn() -> do {
+        ParseResult r = json:parse("}");
+        test:truthy(case r of { Ok(j): false; Err(e): true; }, "unexpected }")
+    },
+    fn() -> do {
+        ParseResult r = json:parse("[1,2");
+        test:truthy(case r of { Ok(j): false; Err(e): true; }, "unterminated array")
+    },
+    fn() -> do {
+        ParseResult r = json:parse("1 2");
+        test:truthy(case r of { Ok(j): false; Err(e): true; }, "trailing content")
+    },
+    fn() -> do {
+        ParseResult r = json:parse("{\"a\"}");
+        test:truthy(case r of { Ok(j): false; Err(e): true; }, "missing colon")
+    },
+    fn() -> do {
+        ParseResult r = json:parse("[1 2]");
+        test:truthy(case r of { Ok(j): false; Err(e): true; }, "missing comma in array")
+    },
+    fn() -> do {
+        ParseResult r = json:parse("\"abc");
+        test:truthy(case r of { Ok(j): false; Err(e): true; }, "unterminated string")
+    },
+    fn() -> do {
+        ParseResult r = json:parse("{\"a\":1 \"b\":2}");
+        test:truthy(case r of { Ok(j): false; Err(e): true; }, "missing comma in object")
+    }
+]);
+
+test:suite("format primitives", [
+    fn() -> test:equal(json:format(Null), "null", "format null"),
+    fn() -> test:equal(json:format(Bool(true)), "true", "format true"),
+    fn() -> test:equal(json:format(Bool(false)), "false", "format false"),
+    fn() -> test:equal(json:format(Int(42)), "42", "format int"),
+    fn() -> test:equal(json:format(Str("hi")), "\"hi\"", "format string")
+]);
+
+test:suite("format structures", [
+    fn() -> test:equal(json:format(Array([])), "[]", "format empty array"),
+    fn() -> test:equal(json:format(Array([Int(1), Int(2)])), "[1,2]", "format array"),
+    fn() -> test:equal(json:format(Object({})), "{}", "format empty object"),
+    fn() -> test:equal(json:format(Object({"a": Int(1)})), "{\"a\":1}", "format object")
+]);
+
+test:suite("format escaping", [
+    fn() -> test:equal(json:format(Str("line1\nline2")), "\"line1\\nline2\"", "escape newline"),
+    fn() -> test:equal(json:format(Str("tab\there")), "\"tab\\there\"", "escape tab"),
+    fn() -> test:equal(json:format(Str("quo\"te")), "\"quo\\\"te\"", "escape quote"),
+    fn() -> test:equal(json:format(Str("back\\slash")), "\"back\\\\slash\"", "escape backslash")
+]);
+
+test:suite("round trip", [
+    fn() -> do {
+        const string input = "{\"name\":\"Alice\",\"scores\":[95,87]}";
+        ParseResult r1 = json:parse(input);
+        const string formatted = case r1 of { Ok(j): json:format(j); Err(e): "error"; };
+        ParseResult r2 = json:parse(formatted);
+        const string again = case r2 of { Ok(j): json:format(j); Err(e): "error"; };
+        test:equal(formatted, again, "round trip stable");
+        test:equal(formatted, input, "round trip matches input")
+    },
+    fn() -> do {
+        const string input = "[1,true,null,\"hi\",[2,3]]";
+        ParseResult r1 = json:parse(input);
+        const string formatted = case r1 of { Ok(j): json:format(j); Err(e): "error"; };
+        test:equal(formatted, input, "array round trip")
+    }
+]);
+
+test:suite("get helper", [
+    fn() -> do {
+        ParseResult r = json:parse("{\"x\":42,\"y\":\"hello\"}");
+        Json obj = case r of { Ok(j): j; Err(e): Null; };
+        test:equal(json:format(json:get(obj, "x")), "42", "get existing int");
+        test:equal(json:format(json:get(obj, "y")), "\"hello\"", "get existing string");
+        test:equal(json:format(json:get(obj, "z")), "null", "get missing key");
+        test:equal(json:format(json:get(Int(5), "x")), "null", "get from non-object")
+    }
+]);
+
+test:suite("at helper", [
+    fn() -> do {
+        ParseResult r = json:parse("[10,20,30]");
+        Json arr = case r of { Ok(j): j; Err(e): Null; };
+        test:equal(json:format(json:at(arr, 0)), "10", "at first");
+        test:equal(json:format(json:at(arr, 2)), "30", "at last");
+        test:equal(json:format(json:at(arr, -1)), "null", "at negative");
+        test:equal(json:format(json:at(arr, 99)), "null", "at out of bounds");
+        test:equal(json:format(json:at(Null, 0)), "null", "at from non-array")
+    }
+]);
+
+test:suite("fields helper", [
+    fn() -> do {
+        ParseResult r = json:parse("{\"a\":1,\"b\":2,\"c\":3}");
+        Json obj = case r of { Ok(j): j; Err(e): Null; };
+        test:equal(std:str(std:len(json:fields(obj))), "3", "fields count");
+        test:equal(std:str(std:len(json:fields(Null))), "0", "fields from non-object")
+    }
+]);
+
+test:suite("count helper", [
+    fn() -> test:equal(std:str(json:count(Array([Int(1), Int(2), Int(3)]))), "3", "count array"),
+    fn() -> test:equal(std:str(json:count(Object({"a": Int(1), "b": Int(2)}))), "2", "count object"),
+    fn() -> test:equal(std:str(json:count(Str("hello"))), "5", "count string"),
+    fn() -> test:equal(std:str(json:count(Null)), "0", "count null"),
+    fn() -> test:equal(std:str(json:count(Int(42))), "0", "count int")
+]);
+
+test:suite("blank helper", [
+    fn() -> test:truthy(json:blank(Null), "null is blank"),
+    fn() -> test:falsy(json:blank(Bool(false)), "false not blank"),
+    fn() -> test:falsy(json:blank(Int(0)), "zero not blank"),
+    fn() -> test:falsy(json:blank(Str("")), "empty string not blank"),
+    fn() -> test:falsy(json:blank(Array([])), "empty array not blank"),
+    fn() -> test:falsy(json:blank(Object({})), "empty object not blank")
+]);
+
+test:suite("kind helper", [
+    fn() -> test:equal(json:kind(Null), "null", "null kind"),
+    fn() -> test:equal(json:kind(Bool(true)), "boolean", "boolean kind"),
+    fn() -> test:equal(json:kind(Int(1)), "integer", "integer kind"),
+    fn() -> test:equal(json:kind(Float(1.0)), "float", "float kind"),
+    fn() -> test:equal(json:kind(Str("x")), "string", "string kind"),
+    fn() -> test:equal(json:kind(Array([])), "array", "array kind"),
+    fn() -> test:equal(json:kind(Object({})), "object", "object kind")
+]);
+
+test:suite("pattern match", [
+    fn() -> do {
+        ParseResult r = json:parse("{\"val\":42}");
+        Json obj = case r of { Ok(j): j; Err(e): Null; };
+        Json inner = json:get(obj, "val");
+        const int n = case inner of { Int(v): v; _: 0; };
+        test:equal(std:str(n), "42", "extract int from parsed");
+        const string k = case obj of { Object(m): json:kind(obj); _: "none"; };
+        test:equal(k, "object", "match on Obj variant")
+    }
+]);
+
+test:suite("build json", [
+    fn() -> test:equal(json:format(Str("hi")), "\"hi\"", "build string"),
+    fn() -> test:equal(json:format(Int(42)), "42", "build int"),
+    fn() -> test:equal(json:format(Array([Int(1), Int(2)])), "[1,2]", "build array"),
+    fn() -> test:equal(json:format(Object({"key": Str("value")})), "{\"key\":\"value\"}", "build object"),
+    fn() -> do {
+        Json nested = Object({"data": Array([Object({"id": Int(1)}), Object({"id": Int(2)})])});
+        test:equal(json:format(nested), "{\"data\":[{\"id\":1},{\"id\":2}]}", "build nested")
+    }
+]);
+
+test:suite("jsonl jsonl", [
+    fn() -> do {
+        const list<Json> items = json:jsonl("{\"a\":1}\n{\"b\":2}\n{\"c\":3}");
+        test:equal(std:str(std:len(items)), "3", "three items");
+        test:equal(json:format(items[0]), "{\"a\":1}", "first item");
+        test:equal(json:format(items[2]), "{\"c\":3}", "last item")
+    },
+    fn() -> do {
+        const list<Json> items = json:jsonl("{\"a\":1}\n\n{\"b\":2}\n");
+        test:equal(std:str(std:len(items)), "2", "skip blank lines")
+    },
+    fn() -> do {
+        const list<Json> items = json:jsonl("1\n\"two\"\ntrue\nnull");
+        test:equal(std:str(std:len(items)), "4", "mixed types")
+    }
+]);
+
+test:suite("load json file", [
+    fn() -> do {
+        file:write("/tmp/test_json_safe.json", "{\"x\":42}");
+        const string result = case json:load("/tmp/test_json_safe.json") of { Ok(j): json:format(j); Err(e): e; };
+        file:delete("/tmp/test_json_safe.json");
+        test:equal(result, "{\"x\":42}", "load json file")
+    },
+    fn() -> test:truthy(case json:load("/tmp/nonexistent_safe.json") of { Ok(j): false; Err(e): true; }, "missing file error")
+]);
+
+test:suite("load jsonl file", [
+    fn() -> do {
+        file:write("/tmp/test_jsonl_safe.jsonl", "{\"id\":1}\n{\"id\":2}");
+        const string result = case json:load("/tmp/test_jsonl_safe.jsonl", JSONL) of { Ok(j): std:str(json:count(j)); Err(e): e; };
+        file:delete("/tmp/test_jsonl_safe.jsonl");
+        test:equal(result, "2", "load jsonl file")
+    }
+]);
+
+test:done();

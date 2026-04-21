@@ -1,0 +1,30 @@
+program use_module;
+import io;
+import std;
+import math;
+import strings;
+import collections;
+import sorting;
+
+io:println("=== Module System Demo ===");
+
+io:println("5! = " + std:str(math:factorial(5)));
+io:println("PI = " + std:str(math.PI));
+
+io:println("reversed(\"SAFE\") = " + strings:reversed("SAFE"));
+io:println("repeat(\"*\", 5) = " + strings:repeat("*", 5));
+
+list<int> nums = [42, 17, 8, 25, 3];
+io:println("contains 8 = " + std:str(collections:contains(nums, 8)));
+io:println("unique count = " + std:str(std:len(collections:unique(nums))));
+io:println("sorted = " + std:str(sorting:sorted(nums, fn(a, b) -> a < b)));
+
+list<int> ordered = sorting:selection(nums, fn(a, b) -> a < b);
+for x in ordered {
+    io:print(std:str(x) + " ");
+}
+io:println("");
+io:println("sorted now = " + std:str(sorting:sorted(ordered, fn(a, b) -> a < b)));
+
+list<int> dups = [1, 2, 2, 3, 3, 3];
+io:println("unique = " + std:str(std:len(collections:unique(dups))) + " items");

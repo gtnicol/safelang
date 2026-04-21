@@ -1,0 +1,224 @@
+program tour;
+import io;
+import std;
+import math;
+import strings;
+import functional;
+import option;
+import result;
+
+// ── A tour of the SAFE language ─────────────────────────────────────
+// This example demonstrates the major features of SAFE in one file.
+// Note: all declarations (types, enums, functions) must come before
+// statements — this is a SAFE grammar rule.
+
+
+// ─── Declarations ───────────────────────────────────────────────────
+
+// Structs
+type Point {
+    float x;
+    float y;
+}
+
+// Enums with associated data
+enum Shape {
+    Circle(float),
+    Rect(float, float),
+    Dot
+}
+
+// Functions
+float distance(Point a, Point b) {
+    float dx = a.x - b.x;
+    float dy = a.y - b.y;
+    return math:sqrt(dx * dx + dy * dy);
+}
+
+string describe(Shape s) {
+    return case s of {
+        Circle(r):  `circle r=${r}`;
+        Rect(w, h): `rectangle ${w}x${h}`;
+        Dot:        "a dot";
+    };
+}
+
+// Guard conditions in case
+string classify(int n) {
+    return case n of {
+        0:            "zero";
+        _ if n < 0:   "negative";
+        _ if n > 100: "large";
+        _:            "positive";
+    };
+}
+
+// Default parameters
+string tag(string text, string open = "<b>", string close = "</b>") {
+    return open + text + close;
+}
+
+// Contracts: requires and ensures
+int factorial(int x)
+    requires x >= 0
+    ensures result >= 1
+{
+    int r = 1;
+    for i in 1..x {
+        r = r * i;
+    }
+    return r;
+}
+
+// Closures: function returning a function
+fn(int) -> int multiplier(int factor) {
+    return fn(x) -> x * factor;
+}
+
+
+// ─── Statements ─────────────────────────────────────────────────────
+
+io:println("=== SAFE Language Tour ===");
+io:println("");
+
+// ── 1. Variables, constants, and string interpolation ───────────────
+
+int count = 10;
+const float TAU = math.PI * 2.0;
+string greeting = `Hello from SAFE! TAU = ${TAU}`;
+io:println(greeting);
+
+// ── 2. Ranges and iteration ─────────────────────────────────────────
+
+io:print("Squares: ");
+for i in 1..6 {
+    io:print(`${i * i} `);
+}
+io:println("");
+
+io:print("Odds:    ");
+list<int> odds = 1..20 step 2;
+for i in odds {
+    io:print(`${i} `);
+}
+io:println("");
+
+// ── 3. Structs and field access ─────────────────────────────────────
+
+Point origin = Point { x: 0.0, y: 0.0 };
+Point target = Point { x: 3.0, y: 4.0 };
+io:println(`Distance: ${distance(origin, target)}`);
+
+// ── 4. Enums and pattern matching ───────────────────────────────────
+
+io:println(describe(Circle(5.0)));
+io:println(describe(Rect(3.0, 7.0)));
+io:println(describe(Dot));
+
+// ── 5. Guard conditions ─────────────────────────────────────────────
+
+io:println(`classify(0)    = ${classify(0)}`);
+io:println(`classify(-5)   = ${classify(0 - 5)}`);
+io:println(`classify(42)   = ${classify(42)}`);
+io:println(`classify(999)  = ${classify(999)}`);
+
+// ── 6. Option and Result ────────────────────────────────────────────
+
+Option found = Some(42);
+Option missing = None;
+int unwrapped = option:unwrap(found, 0);
+int fallback = option:unwrap(missing, 0);
+io:println(`found:   ${unwrapped}`);
+io:println(`missing: ${fallback}`);
+
+Result ok = Ok("success");
+Result err = Err("something went wrong");
+string value = result:unwrap(ok, "");
+boolean failed = result:failed(err);
+string msg = result:message(err);
+io:println(`ok:     ${value}`);
+io:println(`failed: ${failed}`);
+io:println(`msg:    ${msg}`);
+
+// ── 7. Tuples and destructuring ─────────────────────────────────────
+
+(int, string) pair = (42, "answer");
+io:println(`pair: (${pair[0]}, ${pair[1]})`);
+
+(int, string, boolean) trio = (1, "hello", true);
+const (a, b, c) = trio;
+io:println(`destructured: ${a}, ${b}, ${c}`);
+
+// ── 8. Sets ─────────────────────────────────────────────────────────
+
+set<int> nums = #{3, 1, 4, 1, 5, 9};
+io:println(`set: ${nums}`);
+io:println(`3 in set: ${3 in nums}`);
+io:println(`7 in set: ${7 in nums}`);
+int total2 = 0;
+for x in nums {
+    total2 = total2 + x;
+}
+io:println(`set sum: ${total2}`);
+
+// ── 9. Maps ─────────────────────────────────────────────────────────
+
+map<string, int> scores = {"alice": 95, "bob": 82, "carol": 91};
+for name in scores {
+    io:println(`  ${name}: ${scores[name]}`);
+}
+
+// ── 10. Do blocks ───────────────────────────────────────────────────
+
+int computed = do {
+    int x = 10;
+    int y = 20;
+    x * y + 5
+};
+io:println(`do block: ${computed}`);
+
+// ── 11. Default parameters ──────────────────────────────────────────
+
+io:println(tag("bold"));
+io:println(tag("heading", "<h1>", "</h1>"));
+
+// ── 12. Lambdas and higher-order functions ──────────────────────────
+
+list<int> numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+list<int> doubled = functional:map(numbers, fn(x) -> x * 2);
+io:println(`doubled:  ${doubled}`);
+
+list<int> filtered = functional:filter(numbers, fn(x) -> x % 2 == 0);
+io:println(`evens:    ${filtered}`);
+
+int total = functional:fold(numbers, 0, fn(acc, x) -> acc + x);
+io:println(`sum 1-10: ${total}`);
+
+// ── 13. Closures ────────────────────────────────────────────────────
+
+fn(int) -> int triple = multiplier(3);
+fn(int) -> int tenfold = multiplier(10);
+io:println(`triple(7):  ${triple(7)}`);
+io:println(`tenfold(7): ${tenfold(7)}`);
+
+// ── 14. While with bound ────────────────────────────────────────────
+
+int n = 1;
+while (n < 1000) bound (20) {
+    n = n * 2;
+}
+io:println(`doubling to 1000: ${n}`);
+
+// ── 15. Contracts ───────────────────────────────────────────────────
+
+io:println(`10! = ${factorial(10)}`);
+
+// ── 16. Assertions ──────────────────────────────────────────────────
+
+assert 2 + 2 == 4;
+assert strings:starts("SAFE", "SA");
+assert 2 in [1, 2, 3];
+
+io:println("");
+io:println("All assertions passed. Tour complete!");

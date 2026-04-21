@@ -1,0 +1,21 @@
+program index_access;
+import io;
+
+// Feature 4: index access
+
+list<int> items = [10, 20, 30, 40, 50];
+
+io:println(items[0]);
+io:println(items[2]);
+io:println(items[4]);
+
+// Index assignment
+items[1] = 99;
+io:println(items[1]);
+
+// String indexing
+string msg = "SAFE";
+io:println(msg[0]);
+io:println(msg[3]);
+
+io:println("Index access works!");

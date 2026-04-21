@@ -1,0 +1,20 @@
+program case_demo;
+import io;
+import std;
+
+string day_type(int day) {
+    return case day of {
+        0: "Sunday - Weekend";
+        1: "Monday - Weekday";
+        2: "Tuesday - Weekday";
+        3: "Wednesday - Weekday";
+        4: "Thursday - Weekday";
+        5: "Friday - Weekday";
+        6: "Saturday - Weekend";
+        default: "Unknown day";
+    };
+}
+
+for d in std:range(7) {
+    io:println(day_type(d));
+}

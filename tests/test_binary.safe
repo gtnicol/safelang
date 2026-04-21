@@ -1,0 +1,94 @@
+program test_binary;
+import std;
+import binary;
+import test;
+
+int x = 0;
+
+test:suite("alloc and length", [
+    fn() -> do {
+        bytes empty = binary:alloc(0);
+        bytes buf = binary:alloc(16);
+        test:equal(std:str(binary:length(empty)), "0", "alloc 0 length");
+        test:equal(std:str(binary:length(buf)), "16", "alloc 16 length")
+    }
+]);
+
+test:suite("encode and decode", [
+    fn() -> do {
+        bytes encoded = binary:encode("hello");
+        test:equal(std:str(binary:length(encoded)), "5", "encode length");
+        test:equal(binary:decode(encoded), "hello", "decode roundtrip")
+    }
+]);
+
+test:suite("pack and unpack", [
+    fn() -> do {
+        bytes packed = binary:pack(42, 8);
+        test:equal(std:str(binary:length(packed)), "8", "pack 8 bytes");
+        test:equal(std:str(binary:unpack(packed, 0, 8)), "42", "unpack roundtrip")
+    }
+]);
+
+test:suite("get and put", [
+    fn() -> do {
+        bytes b1 = binary:alloc(4);
+        bytes b2 = binary:put(b1, 0, 65);
+        bytes b3 = binary:put(b2, 1, 66);
+        test:equal(std:str(binary:get(b3, 0)), "65", "get byte 0");
+        test:equal(std:str(binary:get(b3, 1)), "66", "get byte 1")
+    }
+]);
+
+test:suite("slice", [
+    fn() -> do {
+        bytes data = binary:encode("abcdef");
+        bytes sliced = binary:slice(data, 1, 4);
+        test:equal(binary:decode(sliced), "bcd", "slice decode")
+    }
+]);
+
+test:suite("concat", [
+    fn() -> do {
+        bytes a = binary:encode("hello");
+        bytes b = binary:encode(" world");
+        bytes combined = binary:concat(a, b);
+        test:equal(binary:decode(combined), "hello world", "concat decode")
+    }
+]);
+
+test:suite("patch", [
+    fn() -> do {
+        bytes base = binary:alloc(8);
+        bytes patch = binary:encode("hi");
+        bytes patched = binary:patch(base, 2, patch);
+        test:equal(std:str(binary:get(patched, 2)), "104", "patched h");
+        test:equal(std:str(binary:get(patched, 3)), "105", "patched i")
+    }
+]);
+
+test:suite("compare", [
+    fn() -> do {
+        bytes a = binary:encode("abc");
+        bytes b = binary:encode("abc");
+        bytes c = binary:encode("abd");
+        test:equal(std:str(binary:compare(a, b)), "0", "compare equal");
+        test:truthy(binary:compare(a, c) != 0, "compare different")
+    }
+]);
+
+test:suite("hex", [
+    fn() -> do {
+        bytes h = binary:alloc(3);
+        bytes h1 = binary:put(h, 0, 255);
+        bytes h2 = binary:put(h1, 1, 0);
+        bytes h3 = binary:put(h2, 2, 171);
+        test:equal(binary:hex(h3), "ff00ab", "hex output")
+    }
+]);
+
+test:suite("kind", [
+    fn() -> test:equal(binary:kind(binary:alloc(1)), "bytes", "kind is bytes")
+]);
+
+test:done();

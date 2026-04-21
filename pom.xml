@@ -1,0 +1,522 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xmlns="http://maven.apache.org/POM/4.0.0"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.safelang</groupId>
+    <artifactId>safe-lang</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>SAFE Language</name>
+    <description>
+        SAFE (Simple Atomic Finite Expressions) — a small programming language with guaranteed termination.
+        Ships as a library containing a JSR-223 (javax.script) ScriptEngine registered under the name "safe",
+        plus interpreter, bytecode compiler/VM, native-C code generator, and WebAssembly backend.
+    </description>
+    <url>https://github.com/REPLACE_ME/safe-lang</url>
+
+    <licenses>
+        <license>
+            <name>BSD 3-Clause License</name>
+            <url>https://opensource.org/licenses/BSD-3-Clause</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <name>Gavin Nicol</name>
+            <email>gtnicol@mac.com</email>
+        </developer>
+    </developers>
+
+    <scm>
+        <!-- TODO: replace with the real GitHub URL once the repo is pushed. -->
+        <connection>scm:git:https://github.com/REPLACE_ME/safe-lang.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/REPLACE_ME/safe-lang.git</developerConnection>
+        <url>https://github.com/REPLACE_ME/safe-lang</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <properties>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Backend test selection: empty means "no profile active" (run all by default) -->
+        <safe.test.interpreter></safe.test.interpreter>
+        <safe.test.bytecode></safe.test.bytecode>
+        <safe.test.native></safe.test.native>
+        <safe.test.wasm></safe.test.wasm>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.antlr</groupId>
+            <artifactId>antlr4-runtime</artifactId>
+            <version>4.13.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <profiles>
+        <profile>
+            <id>interpreter</id>
+            <properties>
+                <safe.test.interpreter>true</safe.test.interpreter>
+            </properties>
+        </profile>
+        <profile>
+            <id>bytecode</id>
+            <properties>
+                <safe.test.bytecode>true</safe.test.bytecode>
+            </properties>
+        </profile>
+        <profile>
+            <id>C</id>
+            <properties>
+                <safe.test.native>true</safe.test.native>
+            </properties>
+        </profile>
+        <profile>
+            <id>wasm</id>
+            <properties>
+                <safe.test.wasm>true</safe.test.wasm>
+            </properties>
+        </profile>
+
+        <!--
+            Recompile src/main/resources/safe_wasm_builtins.c into the
+            committed safe_wasm_builtins.wasm artifact. The committed binary
+            is the source of truth for normal builds, so this profile only
+            needs to run when the .c source has changed. Activate with:
+                mvn compile -Dbuild.wasm=true
+            Requires clang and a WASI sysroot (configured in compile_builtins.sh).
+        -->
+        <profile>
+            <id>build-wasm-builtins</id>
+            <activation>
+                <property>
+                    <name>build.wasm</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>compile-wasm-builtins</id>
+                                <phase>generate-resources</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>${project.basedir}/scripts/compile_builtins.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+            Static-analysis / formatting gate. Opt in with:
+                mvn verify -Pquality
+            Binds:
+              * spotless:check   — Google-Java-Format enforcement on all sources.
+              * checkstyle:check — relaxed Google-style rules (see checkstyle.xml).
+              * spotbugs:check   — high-priority bug patterns, fails the build on findings.
+              * enforcer:enforce — Java 21 minimum + duplicate-dep detection.
+            Runnable individually via `mvn spotless:apply` (auto-format),
+            `mvn checkstyle:checkstyle` (report), or `mvn spotbugs:gui`
+            (inspect findings) with the profile active.
+        -->
+        <profile>
+            <id>quality</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.diffplug.spotless</groupId>
+                        <artifactId>spotless-maven-plugin</artifactId>
+                        <version>2.43.0</version>
+                        <configuration>
+                            <java>
+                                <googleJavaFormat>
+                                    <version>1.22.0</version>
+                                    <style>GOOGLE</style>
+                                </googleJavaFormat>
+                                <removeUnusedImports/>
+                                <importOrder/>
+                                <trimTrailingWhitespace/>
+                                <endWithNewline/>
+                            </java>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>spotless-check</id>
+                                <phase>verify</phase>
+                                <goals><goal>check</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-checkstyle-plugin</artifactId>
+                        <version>3.5.0</version>
+                        <dependencies>
+                            <dependency>
+                                <groupId>com.puppycrawl.tools</groupId>
+                                <artifactId>checkstyle</artifactId>
+                                <version>10.17.0</version>
+                            </dependency>
+                        </dependencies>
+                        <configuration>
+                            <configLocation>${project.basedir}/checkstyle.xml</configLocation>
+                            <inputEncoding>UTF-8</inputEncoding>
+                            <consoleOutput>true</consoleOutput>
+                            <failsOnError>true</failsOnError>
+                            <failOnViolation>true</failOnViolation>
+                            <violationSeverity>error</violationSeverity>
+                            <!-- Pin source roots explicitly so verify (which triggers ANTLR
+                                 first and adds target/generated-sources/antlr4 to the build)
+                                 does not scan generated parser/lexer code. -->
+                            <sourceDirectories>
+                                <sourceDirectory>${project.basedir}/src/main/java</sourceDirectory>
+                            </sourceDirectories>
+                            <testSourceDirectories>
+                                <testSourceDirectory>${project.basedir}/src/test/java</testSourceDirectory>
+                            </testSourceDirectories>
+                            <includeTestSourceDirectory>true</includeTestSourceDirectory>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>checkstyle-check</id>
+                                <phase>verify</phase>
+                                <goals><goal>check</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>com.github.spotbugs</groupId>
+                        <artifactId>spotbugs-maven-plugin</artifactId>
+                        <version>4.8.6.4</version>
+                        <configuration>
+                            <effort>Max</effort>
+                            <!-- Threshold kept at High: Medium surfaces 159 findings
+                                 dominated by EI_EXPOSE_REP / URF_UNREAD* — legitimate
+                                 but pervasive. Dropping to Medium is tracked as a
+                                 separate triage project (see R4 notes in the review
+                                 remediation plan). -->
+                            <threshold>High</threshold>
+                            <failOnError>true</failOnError>
+                            <xmlOutput>true</xmlOutput>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>spotbugs-check</id>
+                                <phase>verify</phase>
+                                <goals><goal>check</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+            Publish to Maven Central via the Sonatype Central Portal (central.sonatype.com).
+
+            Prereqs outside this POM:
+              1. Register the groupId at https://central.sonatype.com/ and verify ownership:
+                 * `io.safelang` needs a DNS TXT record on the safelang.io domain, OR
+                 * switch the groupId to `io.github.<your-gh-handle>` (lighter: GitHub repo verification only).
+              2. Generate a GPG key, publish it to a public keyserver (keys.openpgp.org is accepted),
+                 and add the key to ~/.gnupg/ on the release host.
+              3. In ~/.m2/settings.xml add a `<server>` block with id `central` and your Central Portal
+                 user token (Publisher Portal → Generate User Token):
+                    <server>
+                      <id>central</id>
+                      <username>...TOKEN_USERNAME...</username>
+                      <password>...TOKEN_PASSWORD...</password>
+                    </server>
+              4. Bump <version> off -SNAPSHOT before releasing — Central rejects snapshots.
+
+            Release command:
+                mvn -Prelease clean deploy
+
+            That will: build the thin library jar, the -cli shaded jar, -sources.jar, -javadoc.jar,
+            sign each with GPG, upload the bundle to the Central Portal, and (with autoPublish=true)
+            promote the staging repository automatically once validation passes.
+        -->
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.3.1</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <phase>verify</phase>
+                                <goals><goal>jar-no-fork</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.7.0</version>
+                        <configuration>
+                            <!-- Tolerant javadoc: the codebase is not javadoc-clean, and Central's
+                                 gate only requires the jar exists — it doesn't parse the HTML. -->
+                            <doclint>none</doclint>
+                            <failOnError>false</failOnError>
+                            <quiet>true</quiet>
+                            <source>21</source>
+                            <sourceFileExcludes>
+                                <!-- ANTLR-generated lexer/parser — noisy and not part of the public API. -->
+                                <exclude>**/generated/**</exclude>
+                            </sourceFileExcludes>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <phase>verify</phase>
+                                <goals><goal>jar</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.4</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals><goal>sign</goal></goals>
+                                <configuration>
+                                    <!-- Non-interactive: relies on gpg-agent or GPG_TTY + passphrase
+                                         supplied via ~/.m2/settings.xml or `-Dgpg.passphrase=...`. -->
+                                    <gpgArguments>
+                                        <arg>--pinentry-mode</arg>
+                                        <arg>loopback</arg>
+                                    </gpgArguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.5.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <!-- autoPublish=true promotes the staging repo without a manual click;
+                                 flip to false during the first release if you want to inspect the
+                                 bundle in the Central Portal UI before publishing. -->
+                            <autoPublish>true</autoPublish>
+                            <waitUntil>published</waitUntil>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
+    <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <resource>
+                <directory>${project.basedir}/stdlib</directory>
+                <targetPath>stdlib</targetPath>
+            </resource>
+        </resources>
+        <plugins>
+            <!--
+                Extend `mvn clean` to also remove generated artefacts that
+                examples/benchmarks/tests scatter next to their .safe sources:
+                compiled bytecode, WASM modules, emitted C, runtime-shim copies,
+                and native binaries. These are all regenerated on demand and
+                gitignored — see .gitignore. The target/ directory is cleaned
+                by the plugin's default behaviour.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-clean-plugin</artifactId>
+                <version>3.3.2</version>
+                <configuration>
+                    <filesets>
+                        <fileset>
+                            <directory>examples</directory>
+                            <includes>
+                                <include>*.safeb</include>
+                                <include>*.wasm</include>
+                                <include>*.c</include>
+                                <include>*.h</include>
+                                <include>hello</include>
+                                <include>enums</include>
+                                <include>fibonacci</include>
+                                <include>contracts</include>
+                                <include>tour</include>
+                            </includes>
+                        </fileset>
+                        <fileset>
+                            <directory>benchmarks</directory>
+                            <includes>
+                                <include>*.safeb</include>
+                                <include>*.wasm</include>
+                                <include>*.c</include>
+                                <include>*.h</include>
+                                <include>bench_btree</include>
+                                <include>bench_dbm</include>
+                                <include>bench_lsm</include>
+                                <include>bench_lsm_write</include>
+                            </includes>
+                        </fileset>
+                        <fileset>
+                            <directory>tests</directory>
+                            <includes>
+                                <include>*.safeb</include>
+                                <include>*.wasm</include>
+                                <include>*.c</include>
+                                <include>*.h</include>
+                                <include>*.bak</include>
+                                <include>*.clean</include>
+                                <include>test_dbm</include>
+                                <include>test_queue</include>
+                            </includes>
+                        </fileset>
+                        <fileset>
+                            <directory>stdlib</directory>
+                            <includes>
+                                <include>*.safeb</include>
+                            </includes>
+                        </fileset>
+                    </filesets>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.antlr</groupId>
+                <artifactId>antlr4-maven-plugin</artifactId>
+                <version>4.13.1</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>antlr4</goal>
+                        </goals>
+                        <configuration>
+                            <sourceDirectory>${project.basedir}/src/main/resources</sourceDirectory>
+                            <includes>
+                                <include>SAFEGrammar.g4</include>
+                            </includes>
+                            <outputDirectory>${project.build.directory}/generated-sources/antlr4/safe/parser/generated
+                            </outputDirectory>
+                            <visitor>true</visitor>
+                            <listener>false</listener>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <systemPropertyVariables>
+                        <safe.test.interpreter>${safe.test.interpreter}</safe.test.interpreter>
+                        <safe.test.bytecode>${safe.test.bytecode}</safe.test.bytecode>
+                        <safe.test.native>${safe.test.native}</safe.test.native>
+                        <safe.test.wasm>${safe.test.wasm}</safe.test.wasm>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+            <!--
+                Two artefacts ship from this build:
+                  * safe-lang-<version>.jar         — thin library jar, declares ANTLR as a dep;
+                                                      this is what Maven Central consumers pull in
+                                                      for the JSR-223 ScriptEngine.
+                  * safe-lang-<version>-cli.jar     — shaded fat-jar containing ANTLR, runnable as
+                                                      `java -jar safe-lang-<version>-cli.jar run hello.safe`.
+                The shade execution is attached with a classifier so the main jar keeps its
+                proper POM (deps visible to consumers) and Central gets a clean library artefact.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.1</version>
+                <executions>
+                    <execution>
+                        <id>shade-cli</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <shadedArtifactAttached>true</shadedArtifactAttached>
+                            <shadedClassifierName>cli</shadedClassifierName>
+                            <transformers>
+                                <transformer
+                                        implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>io.safelang.SafeMain</mainClass>
+                                </transformer>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <release>21</release>
+                </configuration>
+            </plugin>
+            <!--
+                Enforcer runs in every build — it's cheap and guards against
+                silently drifting to an older JDK or pulling in conflicting
+                transitive dependency versions.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>enforce</id>
+                        <goals><goal>enforce</goal></goals>
+                        <configuration>
+                            <rules>
+                                <requireJavaVersion>
+                                    <version>[21,)</version>
+                                </requireJavaVersion>
+                                <requireMavenVersion>
+                                    <version>[3.6,)</version>
+                                </requireMavenVersion>
+                                <dependencyConvergence/>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

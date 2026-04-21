@@ -1,0 +1,32 @@
+program types;
+import io;
+
+type Point {
+    int x;
+    int y;
+}
+
+type Rectangle {
+    int width;
+    int height;
+}
+
+int area(Rectangle r) {
+    return r.width * r.height;
+}
+
+int distance_squared(Point a, Point b) {
+    int dx = a.x - b.x;
+    int dy = a.y - b.y;
+    return dx * dx + dy * dy;
+}
+
+Point p1 = Point { x: 3, y: 4 };
+Point p2 = Point { x: 7, y: 1 };
+
+io:println("Distance squared: ");
+io:println(distance_squared(p1, p2));
+
+Rectangle rect = Rectangle { width: 10, height: 5 };
+io:println("Area: ");
+io:println(area(rect));

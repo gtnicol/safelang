@@ -1,0 +1,30 @@
+program test_env;
+import std;
+import env;
+import test;
+
+int x = 0;
+
+test:suite("get", [
+    fn() -> do {
+        const string home = env:get("HOME");
+        test:truthy(std:len(home) > 0, "HOME is set")
+    },
+    fn() -> test:equal(env:get("SAFE_NONEXISTENT_VAR_XYZ"), "", "missing var empty")
+]);
+
+test:suite("has", [
+    fn() -> test:truthy(env:has("HOME"), "HOME exists"),
+    fn() -> test:truthy(env:has("PATH"), "PATH exists"),
+    fn() -> test:falsy(env:has("SAFE_NONEXISTENT_VAR_XYZ"), "missing var false")
+]);
+
+test:suite("require", [
+    fn() -> do {
+        const string home = env:require("HOME", "/default");
+        test:truthy(home != "/default", "require existing uses actual")
+    },
+    fn() -> test:equal(env:require("SAFE_NONEXISTENT_VAR_XYZ", "fallback"), "fallback", "require missing uses fallback")
+]);
+
+test:done();

@@ -1,0 +1,298 @@
+module lsm;
+import binary;
+import page;
+import collections;
+
+const int MEMTABLE_LIMIT = 10000;
+const int INDEX_INTERVAL = 64;
+const int FOOTER_SIZE = 24;
+const int INDEX_MAGIC = 1280463945;
+
+public type LSM {
+    public map<string, bytes> memtable;
+    public list<string> levels;
+    public string directory;
+    public int sequence;
+}
+
+// Create a new LSM store
+public LSM create(string directory) {
+    mkdir(directory);
+    map<string, bytes> empty = {};
+    list<string> levels = [];
+    return LSM { memtable: empty, levels: levels, directory: directory, sequence: 0 };
+}
+
+// Open an existing LSM store
+public LSM open(string directory) {
+    map<string, bytes> empty = {};
+    list<string> tables = [];
+    list<string> files = listdir(directory);
+    for f in files {
+        tables = if (ends(f, ".sst")) then append(tables, f) else tables;
+    }
+    return LSM { memtable: empty, levels: tables, directory: directory, sequence: len(tables) };
+}
+
+// Resolve a memtable hit: tombstones become an empty result.
+private bytes memtablehit(LSM store, string key) {
+    return if (istombstone(store.memtable[key])) then balloc(0) else store.memtable[key];
+}
+
+// Get a value by key (check memtable first, then SSTables)
+public bytes get(LSM store, string key) {
+    return if (contains(store.memtable, key))
+        then memtablehit(store, key)
+        else searchlevels(store, key);
+}
+
+// Search SSTables newest-first for a key
+bytes searchlevels(LSM store, string key) {
+    int remaining = len(store.levels);
+    bytes result = balloc(0);
+    boolean done = false;
+    while (remaining > 0 && !done) bound (1000) {
+        remaining = remaining - 1;
+        string path = store.levels[remaining];
+        bytes found = sstgetindexed(store.directory, path, key);
+        done = len(found) > 0;
+        // If we found a tombstone, stop searching (key was deleted)
+        result = if (done && istombstone(found)) then balloc(0) else if (done) then found else result;
+        // Mark done on tombstone too so we stop looking in older SSTables
+    }
+    return result;
+}
+
+// Put a key-value pair
+public LSM put(LSM store, string key, bytes value) {
+    map<string, bytes> table = store.memtable;
+    table[key] = value;
+    int count = size(table);
+    return if (count >= MEMTABLE_LIMIT)
+        then flush(LSM { memtable: table, levels: store.levels, directory: store.directory, sequence: store.sequence })
+        else LSM { memtable: table, levels: store.levels, directory: store.directory, sequence: store.sequence };
+}
+
+// Tombstone marker: single byte 0xFF distinguishes from "not found" (empty bytes)
+bytes tombstone() {
+    bytes marker = balloc(1);
+    marker = bset(marker, 0, 255);
+    return marker;
+}
+
+boolean istombstone(bytes value) {
+    return len(value) == 1 && bget(value, 0) == 255;
+}
+
+// Remove a key (tombstone)
+public LSM remove(LSM store, string key) {
+    map<string, bytes> table = store.memtable;
+    table[key] = tombstone();
+    return LSM { memtable: table, levels: store.levels, directory: store.directory, sequence: store.sequence };
+}
+
+// Flush memtable to SSTable with sparse index
+public LSM flush(LSM store) {
+    string name = str(store.sequence) + ".sst";
+    string path = store.directory + "/" + name;
+    int handle = binary:open(path, "w");
+    list<string> sorted = sort(keys(store.memtable));
+    // Write data entries, collecting index entries every INDEX_INTERVAL records
+    list<(int, bytes)> index = [];
+    int position = 0;
+    int written = 0;
+    for key in sorted {
+        bytes value = store.memtable[key];
+        bytes encoded = binary:encode(key);
+        // Record index entry at every interval
+        index = if (written % INDEX_INTERVAL == 0) then append(index, (position, encoded)) else index;
+        binary:write(handle, binary:pack(len(encoded), 8));
+        binary:write(handle, encoded);
+        binary:write(handle, binary:pack(len(value), 8));
+        binary:write(handle, value);
+        position = position + 16 + len(encoded) + len(value);
+        written = written + 1;
+    }
+    // Write sparse index entries: offset(8) + klen(8) + key
+    int offset = position;
+    int count = len(index);
+    for i in 0..(count - 1) {
+        (int, bytes) entry = index[i];
+        const (entryoffset, entrykey) = entry;
+        binary:write(handle, binary:pack(entryoffset, 8));
+        binary:write(handle, binary:pack(len(entrykey), 8));
+        binary:write(handle, entrykey);
+    }
+    // Write footer: index_offset(8) + index_count(8) + magic(8)
+    binary:write(handle, binary:pack(offset, 8));
+    binary:write(handle, binary:pack(count, 8));
+    binary:write(handle, binary:pack(INDEX_MAGIC, 8));
+    binary:flush(handle);
+    binary:close(handle);
+    map<string, bytes> empty = {};
+    list<string> levels = append(store.levels, name);
+    return LSM { memtable: empty, levels: levels, directory: store.directory, sequence: store.sequence + 1 };
+}
+
+// Read footer from SSTable to get index offset and count
+(int, int) readfooter(int handle, int total) {
+    binary:seek(handle, total - FOOTER_SIZE);
+    bytes footer = binary:read(handle, FOOTER_SIZE);
+    int magic = binary:unpack(footer, 16, 8);
+    int offset = if (magic == INDEX_MAGIC) then binary:unpack(footer, 0, 8) else 0;
+    int count = if (magic == INDEX_MAGIC) then binary:unpack(footer, 8, 8) else 0;
+    return (offset, count);
+}
+
+// Read sparse index entries from file (bulk read). Returns the raw blob
+// plus a scalar-only index — each entry stores (data_offset,
+// key_offset_in_blob, key_length). Keeping keys as offsets into the
+// blob avoids slicing 157 bytes allocations per lookup; bsearch slices
+// on demand for the log(n) comparisons it actually needs.
+(bytes, list<(int, int, int)>) readindex(int handle, int offset, int count, int total) {
+    int size = total - FOOTER_SIZE - offset;
+    binary:seek(handle, offset);
+    bytes blob = binary:read(handle, size);
+    list<(int, int, int)> index = [];
+    int position = 0;
+    for i in 0..(count - 1) {
+        int entryoffset = binary:unpack(blob, position, 8);
+        int klen = binary:unpack(blob, position + 8, 8);
+        int kstart = position + 16;
+        index = append(index, (entryoffset, kstart, klen));
+        position = position + 16 + klen;
+    }
+    return (blob, index);
+}
+
+// Binary search index for nearest offset <= key; returns data offset to
+// start scanning. Slices candidate key out of blob on demand — log(n)
+// slices total instead of n stored up-front.
+int bsearch(bytes blob, list<(int, int, int)> index, bytes target) {
+    int count = len(index);
+    int low = 0;
+    int high = count - 1;
+    int result = 0;
+    while (low <= high) bound (32) {
+        int mid = (low + high) / 2;
+        (int, int, int) entry = index[mid];
+        const (midoffset, kstart, klen) = entry;
+        bytes midkey = binary:slice(blob, kstart, kstart + klen);
+        int cmp = bcompare(midkey, target);
+        result = if (cmp <= 0) then midoffset else result;
+        low = if (cmp <= 0) then mid + 1 else low;
+        high = if (cmp > 0) then mid - 1 else high;
+    }
+    return result;
+}
+
+// Get data offset from an index entry (first tuple slot)
+int entryoffset(list<(int, int, int)> index, int position) {
+    (int, int, int) entry = index[position];
+    const (offset, kstart, klen) = entry;
+    return offset;
+}
+
+// Compute the scan limit (end offset) for a block starting at given index position
+int scanlimit(list<(int, int, int)> index, int position, int total, int footerstart) {
+    int count = len(index);
+    int next = position + 1;
+    return if (next < count) then entryoffset(index, next) else footerstart;
+}
+
+// Scan a block of data entries for a specific key (bulk read)
+bytes scanblock(int handle, int start, int limit, bytes target) {
+    int size = limit - start;
+    binary:seek(handle, start);
+    bytes blob = binary:read(handle, size);
+    int position = 0;
+    bytes result = balloc(0);
+    boolean done = false;
+    while (position < size && !done) bound (MEMTABLE_LIMIT) {
+        int klen = binary:unpack(blob, position, 8);
+        bytes stored = binary:slice(blob, position + 8, position + 8 + klen);
+        int vlen = binary:unpack(blob, position + 8 + klen, 8);
+        bytes value = binary:slice(blob, position + 16 + klen, position + 16 + klen + vlen);
+        done = bcompare(stored, target) == 0;
+        result = if (done) then value else result;
+        position = position + 16 + klen + vlen;
+    }
+    return result;
+}
+
+// Indexed lookup using sparse index. bsearch returns the data offset;
+// a second pass locates the matching index position so we can compute
+// the scan limit (offset of next index entry).
+bytes indexedlookup(int handle, int total, int indexoffset, int indexcount, bytes encoded) {
+    (bytes, list<(int, int, int)>) loaded = readindex(handle, indexoffset, indexcount, total);
+    const (blob, index) = loaded;
+    int start = bsearch(blob, index, encoded);
+    int position = 0;
+    int count = len(index);
+    for i in 0..(count - 1) {
+        position = if (entryoffset(index, i) == start) then i else position;
+    }
+    int limit = scanlimit(index, position, total, indexoffset);
+    return scanblock(handle, start, limit, encoded);
+}
+
+// Linear scan fallback
+bytes linearlookup(int handle, int total, bytes encoded) {
+    binary:seek(handle, 0);
+    return scanblock(handle, 0, total, encoded);
+}
+
+// Indexed SSTable lookup: read footer, binary search index, scan block
+bytes sstgetindexed(string directory, string filename, string key) {
+    bytes encoded = binary:encode(key);
+    string path = directory + "/" + filename;
+    int handle = binary:open(path, "r");
+    int total = binary:size(path);
+    (int, int) footer = readfooter(handle, total);
+    const (indexoffset, indexcount) = footer;
+    bytes result = if (indexcount > 0) then indexedlookup(handle, total, indexoffset, indexcount, encoded) else linearlookup(handle, total, encoded);
+    binary:close(handle);
+    return result;
+}
+
+// Read a key from an SSTable file (legacy linear scan)
+bytes sstget(string directory, string filename, string key) {
+    bytes encoded = binary:encode(key);
+    string path = directory + "/" + filename;
+    int handle = binary:open(path, "r");
+    int total = binary:size(path);
+    int position = 0;
+    bytes result = balloc(0);
+    boolean done = false;
+    while (position < total && !done) bound (MEMTABLE_LIMIT) {
+        bytes header = binary:read(handle, 8);
+        int klen = binary:unpack(header, 0, 8);
+        bytes stored = binary:read(handle, klen);
+        bytes vheader = binary:read(handle, 8);
+        int vlen = binary:unpack(vheader, 0, 8);
+        bytes value = binary:read(handle, vlen);
+        done = bcompare(stored, encoded) == 0;
+        result = if (done) then value else result;
+        position = position + 16 + klen + vlen;
+    }
+    binary:close(handle);
+    return result;
+}
+
+// Scan a range (memtable only)
+public list<(string, bytes)> scan(LSM store, string start, string end, int limit) {
+    list<(string, bytes)> results = [];
+    list<string> sorted = sort(keys(store.memtable));
+    int found = 0;
+    for key in sorted {
+        boolean inrange = key >= start && key < end && found < limit;
+        results = if (inrange) then append(results, (key, store.memtable[key])) else results;
+        found = if (inrange) then found + 1 else found;
+    }
+    return results;
+}
+
+// Compact SSTables at a level (simplified: no-op)
+public LSM compact(LSM store, int level) {
+    return store;
+}

@@ -1,0 +1,172 @@
+module csv;
+
+// Parse CSV string into list of rows (each row is list of fields)
+public list<list<string>> parse(string s) {
+    list<list<string>> result = [];
+    int pos = 0;
+    while (pos < len(s)) bound (len(s)) {
+        const list<string> fields = row(s, pos);
+        const int next = advance(s, pos);
+        result = if (len(fields) > 0) then append(result, fields) else result;
+        pos = next;
+    }
+    return result;
+}
+
+// Parse CSV with first row as headers into list of maps
+public list<map<string, string>> records(string s) {
+    const list<list<string>> rows = parse(s);
+    return if (len(rows) < 2) then []
+    else build_records(rows[0], rows, len(rows) - 1);
+}
+
+map<string, string> fill_record(
+    list<string> headers,
+    list<string> fields,
+    map<string, string> record,
+    int index)
+decreases(len(headers) - index) {
+    return if (index >= len(headers) || index >= len(fields)) then record
+    else do {
+        const string key = headers[index];
+        record[key] = fields[index];
+        fill_record(headers, fields, record, index + 1)
+    };
+}
+
+list<map<string, string>> build_records(
+    list<string> headers,
+    list<list<string>> rows,
+    int index)
+decreases(index) {
+    return if (index < 1) then []
+    else do {
+        const map<string, string> record =
+            fill_record(headers, rows[index], {}, 0);
+        append(build_records(headers, rows, index - 1), record)
+    };
+}
+
+// Format list of rows into CSV string
+public string format(list<list<string>> rows) {
+    string result = "";
+    int i = 0;
+    for r in rows {
+        result = if (i > 0) then result + "\n" else result;
+        result = result + line(r);
+        i = i + 1;
+    }
+    return result;
+}
+
+// Format a single row of fields into a CSV line
+public string line(list<string> fields) {
+    string result = "";
+    int i = 0;
+    for field in fields {
+        result = if (i > 0) then result + "," else result;
+        result = if (needs(field)) then result + "\"" + escape(field) + "\""
+        else result + field;
+        i = i + 1;
+    }
+    return result;
+}
+
+// Parse one CSV line from string at position, return fields
+list<string> row(string s, int pos) {
+    list<string> fields = [];
+    int p = pos;
+    boolean done = false;
+    while (p < len(s) && !done) bound (len(s)) {
+        done = s[p] == "\n" || s[p] == "\r";
+        const boolean isquoted = !done && s[p] == "\"";
+        const string f = if (done) then ""
+            else if (isquoted) then quoted(s, p + 1)
+            else plain(s, p);
+        p = if (done) then p
+            else if (isquoted) then skip(s, p + 1)
+            else end(s, p);
+        fields = if (done) then fields else append(fields, f);
+        p = if (!done && p < len(s) && s[p] == ",") then p + 1 else p;
+    }
+    return fields;
+}
+
+// Parse a quoted field starting after the opening quote
+string quoted(string s, int pos) {
+    string result = "";
+    int p = pos;
+    boolean done = false;
+    while (p < len(s) && !done) bound (len(s)) {
+        result = if (s[p] == "\"" && p + 1 < len(s) && s[p + 1] == "\"") then result + "\""
+        else if (s[p] == "\"") then result
+        else result + s[p];
+        done = s[p] == "\"" && !(p + 1 < len(s) && s[p + 1] == "\"");
+        p = if (s[p] == "\"" && p + 1 < len(s) && s[p + 1] == "\"") then p + 2 else p + 1;
+    }
+    return result;
+}
+
+// Skip past a quoted field to find position after closing quote
+int skip(string s, int pos) {
+    int p = pos;
+    boolean done = false;
+    while (p < len(s) && !done) bound (len(s)) {
+        done = s[p] == "\"" && !(p + 1 < len(s) && s[p + 1] == "\"");
+        p = if (s[p] == "\"" && p + 1 < len(s) && s[p + 1] == "\"") then p + 2 else p + 1;
+    }
+    return p;
+}
+
+// Parse a plain (unquoted) field
+string plain(string s, int pos) {
+    int p = pos;
+    while (p < len(s) && s[p] != "," && s[p] != "\n" && s[p] != "\r") bound (len(s)) {
+        p = p + 1;
+    }
+    return substring(s, pos, p);
+}
+
+// Find end position of a plain field
+int end(string s, int pos) {
+    int p = pos;
+    while (p < len(s) && s[p] != "," && s[p] != "\n" && s[p] != "\r") bound (len(s)) {
+        p = p + 1;
+    }
+    return p;
+}
+
+// Advance past current line (including newline chars)
+int advance(string s, int pos) {
+    int p = pos;
+    // Skip to end of line (past any fields)
+    boolean inq = false;
+    while (p < len(s) && !(!inq && (s[p] == "\n" || s[p] == "\r"))) bound (len(s)) {
+        inq = if (s[p] == "\"") then !inq else inq;
+        p = p + 1;
+    }
+    // Skip newline chars
+    p = if (p < len(s) && s[p] == "\r") then p + 1 else p;
+    p = if (p < len(s) && s[p] == "\n") then p + 1 else p;
+    return p;
+}
+
+// Check if a field needs quoting
+boolean needs(string s) {
+    return indexOf(s, ",") >= 0 || indexOf(s, "\"") >= 0 || indexOf(s, "\n") >= 0;
+}
+
+// Escape double quotes in field value
+string escape(string s) {
+    return replace(s, "\"", "\"\"");
+}
+
+// Load CSV from file
+public list<list<string>> load(string path) {
+    return if (exists(path)) then parse(read(path)) else [];
+}
+
+// Load CSV from file as records
+public list<map<string, string>> open(string path) {
+    return if (exists(path)) then records(read(path)) else [];
+}

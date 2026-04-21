@@ -1,0 +1,114 @@
+module strings;
+
+public string substring(string s, int start, int end) {
+    return substring(s, start, end);
+}
+
+public int indexOf(string s, string sub) {
+    return indexOf(s, sub);
+}
+
+public string charAt(string s, int i) {
+    return charAt(s, i);
+}
+
+public list<string> split(string s, string delim) {
+    return split(s, delim);
+}
+
+public string trim(string s) {
+    return trim(s);
+}
+
+public string upper(string s) {
+    return upper(s);
+}
+
+public string lower(string s) {
+    return lower(s);
+}
+
+public string replace(string s, string old, string rep) {
+    return replace(s, old, rep);
+}
+
+public boolean starts(string s, string prefix) {
+    return starts(s, prefix);
+}
+
+public boolean ends(string s, string suffix) {
+    return ends(s, suffix);
+}
+
+public string join(list<string> items, string sep) {
+    return join(items, sep);
+}
+
+public list<string> chars(string s) {
+    return chars(s);
+}
+
+public boolean empty(string s) {
+    return len(s) == 0;
+}
+
+public boolean blank(string s) {
+    return len(trim(s)) == 0;
+}
+
+public string repeat(string s, int n) {
+    string result = "";
+    for i in range(n) {
+        result = result + s;
+    }
+    return result;
+}
+
+public string reversed(string s) {
+    string result = "";
+    list<string> characters = chars(s);
+    int length = len(characters);
+    for i in range(length) {
+        result = result + characters[length - 1 - i];
+    }
+    return result;
+}
+
+public string padleft(string s, int w, string f) {
+    string result = s;
+    for i in range(w) {
+        result = if (len(result) >= w) then result else f + result;
+    }
+    return result;
+}
+
+public string padright(string s, int w, string f) {
+    string result = s;
+    for i in range(w) {
+        result = if (len(result) >= w) then result else result + f;
+    }
+    return result;
+}
+
+public boolean matches(string s, string pattern) {
+    return matches(s, pattern);
+}
+
+public list<string> findall(string s, string pattern) {
+    return findall(s, pattern);
+}
+
+public string replaceall(string s, string pattern, string replacement) {
+    return replaceall(s, pattern, replacement);
+}
+
+public int count(string s, string sub) {
+    int total = 0;
+    int length = len(s);
+    int sublen = len(sub);
+    for i in range(length) {
+        boolean match = if (i + sublen <= length) then substring(s, i, i + sublen) == sub else false;
+        total = if (match) then total + 1 else total;
+    }
+    return total;
+}

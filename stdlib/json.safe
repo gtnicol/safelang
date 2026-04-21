@@ -1,0 +1,313 @@
+module json;
+
+public enum Json {
+    Null,
+    Bool(boolean),
+    Int(int),
+    Float(float),
+    Str(string),
+    Array(list<Json>),
+    Object(map<string, Json>)
+}
+
+public enum ParseResult { Ok(Json), Err(string) }
+enum Parsed { Hit(Json, int), Miss(string) }
+public enum Format { JSON, JSONL }
+
+// ===================== Public API =====================
+
+public ParseResult parse(string s) {
+    const int p = skip(s, 0);
+    return if (p >= len(s)) then Err("empty input")
+    else case value(s, p) of {
+        Miss(e): Err(e);
+        Hit(v, rest): if (skip(s, rest) < len(s))
+            then Err("unexpected content after value")
+            else Ok(v);
+    };
+}
+
+public string format(Json j) {
+    return serialize(j, 512);
+}
+
+public Json get(Json j, string key) {
+    return case j of {
+        Object(m): if (contains(m, key)) then m[key] else Null;
+        _: Null;
+    };
+}
+
+public Json at(Json j, int index) {
+    return case j of {
+        Array(a): if (index >= 0 && index < len(a)) then a[index] else Null;
+        _: Null;
+    };
+}
+
+public list<string> fields(Json j) {
+    return case j of {
+        Object(m): keys(m);
+        _: [];
+    };
+}
+
+public int count(Json j) {
+    return case j of {
+        Array(a): len(a);
+        Object(m): len(keys(m));
+        Str(s): len(s);
+        _: 0;
+    };
+}
+
+public boolean blank(Json j) {
+    return case j of {
+        Null: true;
+        _: false;
+    };
+}
+
+public string kind(Json j) {
+    return case j of {
+        Null: "null";
+        Bool(b): "boolean";
+        Int(n): "integer";
+        Float(f): "float";
+        Str(s): "string";
+        Array(a): "array";
+        Object(m): "object";
+    };
+}
+
+public ParseResult load(string path, Format mode = JSON) {
+    const string content = readfile(path);
+    return if (content == "" && !exists(path)) then fail("file not found: " + path)
+    else case mode of {
+        JSON: parse(content);
+        JSONL: Ok(Array(jsonl(content)));
+    };
+}
+
+public list<Json> jsonl(string s) {
+    list<Json> result = [];
+    for line in split(s, "\n") {
+        const int p = skip(line, 0);
+        result = if (p >= len(line)) then result
+        else case parse(line) of {
+            Ok(j): append(result, j);
+            _: result;
+        };
+    }
+    return result;
+}
+
+string readfile(string path) {
+    return if (exists(path)) then read(path) else "";
+}
+
+ParseResult fail(string message) {
+    return Err(message);
+}
+
+// ===================== Parser =====================
+
+Parsed value(string s, int pos)
+decreases(len(s) - pos) {
+    const int p = skip(s, pos);
+    return if (p >= len(s)) then Miss("unexpected end of input")
+    else if (s[p] == "{") then object(s, p + 1)
+    else if (s[p] == "[") then array(s, p + 1)
+    else if (s[p] == "\"") then quoted(s, p + 1)
+    else if (s[p] == "t") then literal(s, p, "true", Bool(true))
+    else if (s[p] == "f") then literal(s, p, "false", Bool(false))
+    else if (s[p] == "n") then literal(s, p, "null", Null)
+    else if (s[p] == "-" || digit(s[p])) then number(s, p)
+    else Miss("unexpected character at position " + str(p));
+}
+
+Parsed object(string s, int start)
+decreases(len(s) - start) {
+    const int p = skip(s, start);
+    return if (p >= len(s)) then Miss("unterminated object")
+    else if (s[p] == "}") then Hit(Object({}), p + 1)
+    else entry(s, p, {});
+}
+
+Parsed entry(string s, int pos, map<string, Json> m)
+decreases(len(s) - pos) {
+    const int p = skip(s, pos);
+    return if (p >= len(s) || s[p] != "\"") then Miss("expected string key")
+    else case quoted(s, p + 1) of {
+        Miss(e): Miss(e);
+        Hit(key, kp): colon(s, kp, key, m);
+    };
+}
+
+Parsed colon(string s, int pos, Json key, map<string, Json> m)
+decreases(len(s) - pos) {
+    const int p = skip(s, pos);
+    return if (p >= len(s) || s[p] != ":") then Miss("expected colon")
+    else case value(s, p + 1) of {
+        Miss(e): Miss(e);
+        Hit(val, vp): comma(s, vp, key, val, m);
+    };
+}
+
+Parsed comma(string s, int pos, Json key, Json val, map<string, Json> m)
+decreases(len(s) - pos) {
+    const string k = case key of { Str(t): t; _: ""; };
+    m[k] = val;
+    const int p = skip(s, pos);
+    return if (p >= len(s)) then Miss("unterminated object")
+    else if (s[p] == ",") then entry(s, p + 1, m)
+    else if (s[p] == "}") then Hit(Object(m), p + 1)
+    else Miss("expected comma or }");
+}
+
+Parsed array(string s, int start)
+decreases(len(s) - start) {
+    const int p = skip(s, start);
+    return if (p >= len(s)) then Miss("unterminated array")
+    else if (s[p] == "]") then Hit(Array([]), p + 1)
+    else element(s, p, []);
+}
+
+Parsed element(string s, int pos, list<Json> items)
+decreases(len(s) - pos) {
+    return case value(s, pos) of {
+        Miss(e): Miss(e);
+        Hit(val, vp): do {
+            const list<Json> next = append(items, val);
+            const int p = skip(s, vp);
+            if (p >= len(s)) then Miss("unterminated array")
+            else if (s[p] == ",") then element(s, p + 1, next)
+            else if (s[p] == "]") then Hit(Array(next), p + 1)
+            else Miss("expected comma or ]")
+        };
+    };
+}
+
+Parsed quoted(string s, int start) {
+    int p = start;
+    string result = "";
+    boolean ok = true;
+    while (p < len(s) && s[p] != "\"" && ok) bound (len(s)) {
+        const string ch = s[p];
+        const boolean escaped = ch == "\\";
+        ok = if (escaped && p + 1 >= len(s)) then false else ok;
+        p = if (escaped && ok) then p + 1 else p;
+        const string ec = if (escaped && ok) then s[p] else "";
+        result = if (!ok) then result
+            else if (!escaped) then result + ch
+            else if (ec == "n") then result + "\n"
+            else if (ec == "t") then result + "\t"
+            else if (ec == "r") then result + "\r"
+            else if (ec == "\\") then result + "\\"
+            else if (ec == "\"") then result + "\""
+            else if (ec == "/") then result + "/"
+            else result + "\\" + ec;
+        p = p + 1;
+    }
+    return if (!ok) then Miss("unterminated string escape")
+    else if (p >= len(s)) then Miss("unterminated string")
+    else Hit(Str(result), p + 1);
+}
+
+Parsed number(string s, int start) {
+    int p = start;
+    boolean real = false;
+    p = if (p < len(s) && s[p] == "-") then p + 1 else p;
+    const int d = p;
+    while (p < len(s) && digit(s[p])) bound (len(s)) {
+        p = p + 1;
+    }
+    return if (p == d) then Miss("expected digit")
+    else do {
+        const boolean dot = p < len(s) && s[p] == ".";
+        p = if (dot) then p + 1 else p;
+        real = if (dot) then true else false;
+        while (p < len(s) && digit(s[p])) bound (len(s)) {
+            p = p + 1;
+        }
+        const boolean exp = p < len(s) && (s[p] == "e" || s[p] == "E");
+        p = if (exp) then p + 1 else p;
+        real = if (exp) then true else real;
+        p = if (p < len(s) && (s[p] == "+" || s[p] == "-")) then p + 1 else p;
+        while (p < len(s) && digit(s[p])) bound (len(s)) {
+            p = p + 1;
+        }
+        const string raw = substring(s, start, p);
+        const int digits = if (s[start] == "-") then len(raw) - 1 else len(raw);
+        if (real || digits > 18) then Hit(Float(decimal(raw)), p)
+        else Hit(Int(integer(raw)), p)
+    };
+}
+
+Parsed literal(string s, int pos, string word, Json result) {
+    const int end = pos + len(word);
+    return if (end <= len(s) && substring(s, pos, end) == word) then Hit(result, end)
+    else Miss("expected " + word);
+}
+
+// ===================== Formatter =====================
+
+string serialize(Json j, int limit)
+decreases(limit) {
+    return if (limit <= 0) then "\"...\""
+    else case j of {
+        Null: "null";
+        Bool(b): if (b) then "true" else "false";
+        Int(n): str(n);
+        Float(f): str(f);
+        Str(s): "\"" + escape(s) + "\"";
+        Array(a): do {
+            string r = "[";
+            int i = 0;
+            for item in a {
+                r = if (i > 0) then r + "," else r;
+                r = r + serialize(item, limit - 1);
+                i = i + 1;
+            }
+            r + "]"
+        };
+        Object(m): do {
+            string r = "{";
+            int i = 0;
+            for k in keys(m) {
+                r = if (i > 0) then r + "," else r;
+                r = r + "\"" + escape(k) + "\":" + serialize(m[k], limit - 1);
+                i = i + 1;
+            }
+            r + "}"
+        };
+    };
+}
+
+string escape(string s) {
+    const string r1 = replace(s, "\\", "\\\\");
+    const string r2 = replace(r1, "\"", "\\\"");
+    const string r3 = replace(r2, "\n", "\\n");
+    const string r4 = replace(r3, "\t", "\\t");
+    const string r5 = replace(r4, "\r", "\\r");
+    return r5;
+}
+
+// ===================== Helpers =====================
+
+int skip(string s, int pos) {
+    int p = pos;
+    while (p < len(s) && space(s[p])) bound (len(s)) {
+        p = p + 1;
+    }
+    return p;
+}
+
+boolean digit(string c) {
+    return c == "0" || c == "1" || c == "2" || c == "3" || c == "4" ||
+           c == "5" || c == "6" || c == "7" || c == "8" || c == "9";
+}
+
+boolean space(string c) {
+    return c == " " || c == "\n" || c == "\r" || c == "\t";
+}

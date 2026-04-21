@@ -1,0 +1,270 @@
+module dbm;
+import binary;
+import page;
+import hash;
+
+public type DBM {
+    public int handle;
+    public int buckets;
+    public int count;
+    public int pages;
+}
+
+// Layout constants
+const int ENTRY = 24;
+const int SPACE = 4072;
+
+// Defaults and bounds
+const int BUCKETS = 128;
+const int MAXCHAIN = 64;
+const int MAGIC = 221;
+
+// Create a new DBM store
+public DBM create(string path) {
+    int handle = binary:open(path, "w");
+    Page meta = page:create(0);
+    meta = page:writeint(meta, 0, MAGIC);
+    meta = page:writeint(meta, 8, BUCKETS);
+    meta = page:writeint(meta, 16, 0);
+    meta = page:writeint(meta, 24, BUCKETS + 1);
+    page:store(handle, meta);
+    for i in 0..BUCKETS {
+        Page p = page:create(i + 1);
+        p = page:writeint(p, 0, 4);
+        p = page:writeint(p, 8, 0);
+        p = page:writeint(p, 16, 0);
+        page:store(handle, p);
+    }
+    binary:flush(handle);
+    return DBM { handle: handle, buckets: BUCKETS, count: 0, pages: BUCKETS + 1 };
+}
+
+// Open an existing DBM store
+public DBM open(string path) {
+    int handle = binary:open(path, "rw");
+    Page meta = page:load(handle, 0);
+    int buckets = page:readint(meta, 8);
+    int count = page:readint(meta, 16);
+    int pages = page:readint(meta, 24);
+    return DBM { handle: handle, buckets: buckets, count: count, pages: pages };
+}
+
+// Close the DBM store
+public void close(DBM store) {
+    Page meta = page:create(0);
+    meta = page:writeint(meta, 0, MAGIC);
+    meta = page:writeint(meta, 8, store.buckets);
+    meta = page:writeint(meta, 16, store.count);
+    meta = page:writeint(meta, 24, store.pages);
+    page:store(store.handle, meta);
+    binary:flush(store.handle);
+    binary:close(store.handle);
+}
+
+// Get a value by key (returns empty bytes if not found)
+public bytes get(DBM store, string key) {
+    bytes encoded = bencode(key);
+    int number = slot(encoded, store.buckets) + 1;
+    return search(store.handle, number, encoded);
+}
+
+// Check if a key exists
+public boolean has(DBM store, string key) {
+    bytes encoded = bencode(key);
+    int number = slot(encoded, store.buckets) + 1;
+    return len(search(store.handle, number, encoded)) > 0;
+}
+
+// Put a key-value pair (insert or update)
+public DBM put(DBM store, string key, bytes value) {
+    bytes encoded = bencode(key);
+    int number = slot(encoded, store.buckets) + 1;
+    boolean exists = len(search(store.handle, number, encoded)) > 0;
+    DBM current = if (exists) then erase(store, number, encoded) else store;
+    return insert(current, number, encoded, value);
+}
+
+// Remove a key
+public DBM remove(DBM store, string key) {
+    bytes encoded = bencode(key);
+    int number = slot(encoded, store.buckets) + 1;
+    boolean exists = len(search(store.handle, number, encoded)) > 0;
+    return if (exists) then erase(store, number, encoded) else store;
+}
+
+// Compute bucket index from key bytes
+int slot(bytes encoded, int buckets) {
+    int h = hash:fnv(encoded);
+    int raw = h % buckets;
+    return if (raw < 0) then raw + buckets else raw;
+}
+
+// Search the overflow chain for a key
+bytes search(int handle, int number, bytes encoded) {
+    int current = number;
+    bytes result = balloc(0);
+    boolean done = false;
+    while (current > 0 && !done) bound (MAXCHAIN) {
+        Page p = page:load(handle, current);
+        int entries = page:readint(p, 8);
+        bytes found = scan(p, entries, encoded);
+        done = len(found) > 0;
+        result = if (done) then found else result;
+        current = if (done) then 0 else page:readint(p, 16);
+    }
+    return result;
+}
+
+// Scan a single page for a key, return its value or empty bytes
+bytes scan(Page p, int entries, bytes encoded) {
+    int offset = ENTRY;
+    bytes result = balloc(0);
+    boolean done = false;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, offset);
+        bytes stored = page:readdata(p, offset + 8, klen);
+        int vlen = page:readint(p, offset + 8 + klen);
+        bytes value = if (bcompare(stored, encoded) == 0 && !done)
+            then page:readdata(p, offset + 16 + klen, vlen)
+            else result;
+        done = if (bcompare(stored, encoded) == 0) then true else done;
+        result = value;
+        offset = offset + 16 + klen + vlen;
+    }
+    return result;
+}
+
+// Calculate used space in a page's entry area
+int used(Page p, int entries) {
+    int offset = ENTRY;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, offset);
+        int vlen = page:readint(p, offset + 8 + klen);
+        offset = offset + 16 + klen + vlen;
+    }
+    return offset - ENTRY;
+}
+
+// Insert an entry into the bucket chain
+DBM insert(DBM store, int number, bytes encoded, bytes value) {
+    int needed = 16 + len(encoded) + len(value);
+    int current = number;
+    int target = number;
+    boolean found = false;
+    while (current > 0 && !found) bound (MAXCHAIN) {
+        Page p = page:load(store.handle, current);
+        int entries = page:readint(p, 8);
+        int fill = used(p, entries);
+        found = fill + needed <= SPACE;
+        target = current;
+        current = if (found) then 0 else page:readint(p, 16);
+    }
+    return if (found) then addentry(store, target, encoded, value) else addpage(store, target, encoded, value);
+}
+
+// Append an entry to a page that has room
+DBM addentry(DBM store, int target, bytes encoded, bytes value) {
+    Page p = page:load(store.handle, target);
+    int entries = page:readint(p, 8);
+    int fill = used(p, entries);
+    int offset = ENTRY + fill;
+    p = page:writeint(p, offset, len(encoded));
+    p = page:writedata(p, offset + 8, encoded);
+    p = page:writeint(p, offset + 8 + len(encoded), len(value));
+    p = page:writedata(p, offset + 16 + len(encoded), value);
+    p = page:writeint(p, 8, entries + 1);
+    page:store(store.handle, p);
+    binary:flush(store.handle);
+    return DBM { handle: store.handle, buckets: store.buckets, count: store.count + 1, pages: store.pages };
+}
+
+// Allocate a new overflow page and write the entry
+DBM addpage(DBM store, int last, bytes encoded, bytes value) {
+    int fresh = store.pages;
+    Page tail = page:load(store.handle, last);
+    tail = page:writeint(tail, 16, fresh);
+    page:store(store.handle, tail);
+    Page p = page:create(fresh);
+    p = page:writeint(p, 0, 5);
+    p = page:writeint(p, 8, 1);
+    p = page:writeint(p, 16, 0);
+    p = page:writeint(p, ENTRY, len(encoded));
+    p = page:writedata(p, ENTRY + 8, encoded);
+    p = page:writeint(p, ENTRY + 8 + len(encoded), len(value));
+    p = page:writedata(p, ENTRY + 16 + len(encoded), value);
+    page:store(store.handle, p);
+    binary:flush(store.handle);
+    return DBM { handle: store.handle, buckets: store.buckets, count: store.count + 1, pages: fresh + 1 };
+}
+
+// Erase a key from the bucket chain
+DBM erase(DBM store, int number, bytes encoded) {
+    int current = number;
+    boolean done = false;
+    while (current > 0 && !done) bound (MAXCHAIN) {
+        Page p = page:load(store.handle, current);
+        int entries = page:readint(p, 8);
+        done = present(p, entries, encoded);
+        current = if (done) then eraseone(store.handle, p, entries, encoded) else page:readint(p, 16);
+    }
+    int adjusted = if (done) then store.count - 1 else store.count;
+    return DBM { handle: store.handle, buckets: store.buckets, count: adjusted, pages: store.pages };
+}
+
+// Rebuild and store a page without the given key; returns 0 as sentinel
+int eraseone(int handle, Page p, int entries, bytes encoded) {
+    Page fresh = rebuild(p, entries, encoded);
+    page:store(handle, fresh);
+    binary:flush(handle);
+    return 0;
+}
+
+// Check if a key is present in a single page
+boolean present(Page p, int entries, bytes encoded) {
+    int offset = ENTRY;
+    boolean found = false;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, offset);
+        bytes stored = page:readdata(p, offset + 8, klen);
+        found = if (bcompare(stored, encoded) == 0) then true else found;
+        int vlen = page:readint(p, offset + 8 + klen);
+        offset = offset + 16 + klen + vlen;
+    }
+    return found;
+}
+
+// Rebuild a page excluding the given key
+Page rebuild(Page p, int entries, bytes encoded) {
+    int number = p.number;
+    int kind = page:readint(p, 0);
+    int chain = page:readint(p, 16);
+    Page fresh = page:create(number);
+    fresh = page:writeint(fresh, 0, kind);
+    fresh = page:writeint(fresh, 16, chain);
+    int source = ENTRY;
+    int target = ENTRY;
+    int kept = 0;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, source);
+        bytes stored = page:readdata(p, source + 8, klen);
+        int vlen = page:readint(p, source + 8 + klen);
+        boolean skip = bcompare(stored, encoded) == 0;
+        fresh = if (!skip) then copy(fresh, target, p, source, klen, vlen) else fresh;
+        target = if (!skip) then target + 16 + klen + vlen else target;
+        kept = if (!skip) then kept + 1 else kept;
+        source = source + 16 + klen + vlen;
+    }
+    fresh = page:writeint(fresh, 8, kept);
+    return fresh;
+}
+
+// Copy one entry from source page to target page
+Page copy(Page dest, int target, Page source, int offset, int klen, int vlen) {
+    bytes kdata = page:readdata(source, offset + 8, klen);
+    bytes vdata = page:readdata(source, offset + 16 + klen, vlen);
+    Page result = page:writeint(dest, target, klen);
+    result = page:writedata(result, target + 8, kdata);
+    result = page:writeint(result, target + 8 + klen, vlen);
+    result = page:writedata(result, target + 16 + klen, vdata);
+    return result;
+}

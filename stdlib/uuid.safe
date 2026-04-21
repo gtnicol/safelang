@@ -1,0 +1,36 @@
+module uuid;
+
+public string generate() {
+    const string hex = "0123456789abcdef";
+    string result = "";
+    int i = 0;
+    while (i < 32) bound (32) {
+        const int v = if (i == 12) then 4
+            else if (i == 16) then 8 + randint(0, 3)
+            else randint(0, 15);
+        result = result + substring(hex, v, v + 1);
+        result = if (i == 7 || i == 11 || i == 15 || i == 19) then result + "-" else result;
+        i = i + 1;
+    }
+    return result;
+}
+
+public boolean valid(string s) {
+    return len(s) == 36 && s[8] == "-" && s[13] == "-" && s[18] == "-" && s[23] == "-" && allhex(s);
+}
+
+public string nil() {
+    return "00000000-0000-0000-0000-000000000000";
+}
+
+boolean allhex(string s) {
+    boolean ok = true;
+    int i = 0;
+    while (i < len(s) && ok) bound (len(s)) {
+        ok = if (s[i] == "-") then ok
+        else if (indexOf("0123456789abcdefABCDEF", s[i]) >= 0) then ok
+        else false;
+        i = i + 1;
+    }
+    return ok;
+}

@@ -1,0 +1,47 @@
+program decreases_demo;
+import io;
+import std;
+
+// The decreases clause provides an explicit termination measure.
+// The measure must be a non-negative integer that strictly decreases
+// on every recursive call.
+
+// Simple countdown with decreases(n)
+int countdown(int n)
+decreases(n) {
+    return if (n <= 0) then 0 else 1 + countdown(n - 1);
+}
+
+// Fibonacci with decreases — the measure is just n
+int fib(int n)
+decreases(n) {
+    return if (n <= 1) then n else fib(n - 1) + fib(n - 2);
+}
+
+// GCD using decreases(a + b) — sum of arguments decreases each call
+int gcd(int a, int b)
+decreases(a + b) {
+    return if (b == 0) then a else gcd(b, a % b);
+}
+
+// Float recursion requires a decreases clause with an int cast
+float geometric(float x)
+decreases(std:integer(x)) {
+    return if (x <= 0.0) then 0.0 else x + geometric(x - 1.0);
+}
+
+// Power function: decreases on the exponent
+int power(int base, int exp)
+decreases(exp) {
+    return if (exp <= 0) then 1 else base * power(base, exp - 1);
+}
+
+// Run all examples
+io:println("countdown(10) = " + std:str(countdown(10)));
+io:println("fib(10) = " + std:str(fib(10)));
+io:println("gcd(48, 18) = " + std:str(gcd(48, 18)));
+io:println("gcd(100, 75) = " + std:str(gcd(100, 75)));
+io:println("geometric(5.0) = " + std:str(geometric(5.0)));
+io:println("power(2, 10) = " + std:str(power(2, 10)));
+io:println("power(3, 5) = " + std:str(power(3, 5)));
+io:println("All decreases examples passed!");

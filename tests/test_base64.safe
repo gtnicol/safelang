@@ -1,0 +1,43 @@
+program test_base64;
+import std;
+import base64;
+import test;
+
+int x = 0;
+
+test:suite("encode", [
+    fn() -> test:equal(base64:encode("Hello"), "SGVsbG8=", "hello"),
+    fn() -> test:equal(base64:encode("Hi"), "SGk=", "two chars"),
+    fn() -> test:equal(base64:encode("A"), "QQ==", "one char"),
+    fn() -> test:equal(base64:encode(""), "", "empty"),
+    fn() -> test:equal(base64:encode("Man"), "TWFu", "no padding"),
+    fn() -> test:equal(base64:encode("Hello, World!"), "SGVsbG8sIFdvcmxkIQ==", "hello world"),
+    fn() -> test:equal(base64:encode("abc"), "YWJj", "abc"),
+    fn() -> test:equal(base64:encode("ABCDEF"), "QUJDREVG", "uppercase")
+]);
+
+test:suite("decode", [
+    fn() -> test:equal(base64:decode("SGVsbG8="), "Hello", "hello"),
+    fn() -> test:equal(base64:decode("SGk="), "Hi", "two chars"),
+    fn() -> test:equal(base64:decode("QQ=="), "A", "one char"),
+    fn() -> test:equal(base64:decode(""), "", "empty"),
+    fn() -> test:equal(base64:decode("TWFu"), "Man", "no padding"),
+    fn() -> test:equal(base64:decode("SGVsbG8sIFdvcmxkIQ=="), "Hello, World!", "hello world"),
+    fn() -> test:equal(base64:decode("YWJj"), "abc", "abc")
+]);
+
+test:suite("round trip", [
+    fn() -> test:equal(base64:decode(base64:encode("test string")), "test string", "round trip text"),
+    fn() -> test:equal(base64:decode(base64:encode("a")), "a", "round trip single"),
+    fn() -> test:equal(base64:decode(base64:encode("ab")), "ab", "round trip two"),
+    fn() -> test:equal(base64:decode(base64:encode("abc")), "abc", "round trip three"),
+    fn() -> test:equal(base64:decode(base64:encode("The quick brown fox")), "The quick brown fox", "round trip sentence")
+]);
+
+test:suite("special characters", [
+    fn() -> test:equal(base64:decode(base64:encode("hello world!")), "hello world!", "with space and bang"),
+    fn() -> test:equal(base64:decode(base64:encode("line1-line2")), "line1-line2", "with dash"),
+    fn() -> test:equal(base64:decode(base64:encode("a+b/c=d")), "a+b/c=d", "with base64 chars")
+]);
+
+test:done();

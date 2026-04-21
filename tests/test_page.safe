@@ -1,0 +1,49 @@
+program test_page;
+import std;
+import file;
+import binary;
+import page;
+import test;
+
+int x = 0;
+
+test:suite("page", [
+    fn() -> do {
+        Page p = page:create(0);
+        test:suite("create", [
+            fn() -> test:equal(std:str(p.number), "0", "page number")
+        ]);
+        Page p1 = page:writeint(p, 0, 42);
+        Page p2 = page:writeint(p1, 8, 100);
+        test:suite("writeint and readint", [
+            fn() -> test:equal(std:str(page:readint(p1, 0)), "42", "readint 42"),
+            fn() -> test:equal(std:str(page:readint(p2, 8)), "100", "readint 100"),
+            fn() -> test:equal(std:str(page:readint(p2, 0)), "42", "first int preserved")
+        ]);
+        bytes data = binary:encode("hello");
+        Page p3 = page:writedata(p, 16, data);
+        bytes read = page:readdata(p3, 16, 5);
+        test:suite("writedata and readdata", [
+            fn() -> test:equal(binary:decode(read), "hello", "readdata roundtrip")
+        ]);
+        string stamp = std:str(std:time());
+        string path = `/tmp/safe_test_page_${stamp}.bin`;
+        int handle = binary:open(path, "w");
+        Page w1 = page:create(0);
+        Page w2 = page:writeint(w1, 0, 999);
+        Page w3 = page:writedata(w2, 16, binary:encode("test"));
+        page:store(handle, w3);
+        binary:flush(handle);
+        binary:close(handle);
+        int handle2 = binary:open(path, "r");
+        Page loaded = page:load(handle2, 0);
+        binary:close(handle2);
+        file:delete(path);
+        test:suite("file roundtrip", [
+            fn() -> test:equal(std:str(page:readint(loaded, 0)), "999", "loaded int"),
+            fn() -> test:equal(binary:decode(page:readdata(loaded, 16, 4)), "test", "loaded data")
+        ])
+    }
+]);
+
+test:done();

@@ -1,0 +1,13 @@
+module io;
+
+public void print(string s) {
+    print(s);
+}
+
+public void println(string s) {
+    println(s);
+}
+
+public string input(string prompt) {
+    return input(prompt);
+}

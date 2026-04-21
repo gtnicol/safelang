@@ -1,0 +1,407 @@
+module xml;
+
+public enum Xml {
+    Element(string, map<string, string>, list<Xml>),
+    Text(string),
+    Comment(string),
+    CData(string),
+    PI(string, string),
+    EntityReference(string)
+}
+
+public enum ParseResult { Ok(Xml), Err(string) }
+enum Parsed { Hit(Xml, int), Miss(string) }
+
+// ===================== Public API =====================
+
+public ParseResult parse(string s) {
+    const int p = skip(s, 0);
+    return if (p >= len(s)) then Err("empty input")
+    else if (s[p] != "<" && s[p] != "&") then Err("expected root element")
+    else case root(s, p) of {
+        Miss(e): Err(e);
+        Hit(v, rest): if (skip(s, rest) < len(s))
+            then Err("unexpected content after root element")
+            else Ok(v);
+    };
+}
+
+public string format(Xml x) {
+    return render(x, 512);
+}
+
+public string tag(Xml x) {
+    return case x of {
+        Element(t, a, c): t;
+        _: "";
+    };
+}
+
+public string attr(Xml x, string key) {
+    return case x of {
+        Element(t, a, c): if (contains(a, key)) then a[key] else "";
+        _: "";
+    };
+}
+
+public map<string, string> attrs(Xml x) {
+    return case x of {
+        Element(t, a, c): a;
+        _: {};
+    };
+}
+
+public list<Xml> children(Xml x) {
+    return case x of {
+        Element(t, a, c): c;
+        _: [];
+    };
+}
+
+public string text(Xml x) {
+    return extract(x, 512);
+}
+
+public list<Xml> find(Xml x, string name) {
+    return case x of {
+        Element(t, a, c): do {
+            list<Xml> result = [];
+            for child in c {
+                result = case child of {
+                    Element(ct, ca, cc): if (ct == name) then append(result, child) else result;
+                    _: result;
+                };
+            }
+            result
+        };
+        _: [];
+    };
+}
+
+public int count(Xml x) {
+    return case x of {
+        Element(t, a, c): len(c);
+        _: 0;
+    };
+}
+
+public ParseResult load(string path) {
+    const string content = readfile(path);
+    return if (content == "" && !exists(path)) then fail("file not found: " + path)
+    else parse(content);
+}
+
+string readfile(string path) {
+    return if (exists(path)) then read(path) else "";
+}
+
+ParseResult fail(string message) {
+    return Err(message);
+}
+
+// ===================== Parser =====================
+
+Parsed root(string s, int pos)
+decreases(len(s) - pos) {
+    return case node(s, pos) of {
+        Miss(e): Miss(e);
+        Hit(v, np): case v of {
+            Element(t, a, c): Hit(v, np);
+            _: if (skip(s, np) >= len(s)) then Miss("no root element found")
+               else root(s, skip(s, np));
+        };
+    };
+}
+
+Parsed node(string s, int pos)
+decreases(len(s) - pos) {
+    return if (pos >= len(s)) then Miss("unexpected end of input")
+    else if (s[pos] == "&") then reference(s, pos + 1)
+    else if (s[pos] != "<") then raw(s, pos)
+    else if (pos + 8 < len(s) && s[pos + 1] == "!" && s[pos + 2] == "[" && substring(s, pos, pos + 9) == "<![CDATA[") then cdata(s, pos + 9)
+    else if (pos + 3 < len(s) && s[pos + 1] == "!" && s[pos + 2] == "-" && s[pos + 3] == "-") then comment(s, pos + 4)
+    else if (pos + 1 < len(s) && s[pos + 1] == "?") then instruction(s, pos + 2)
+    else opening(s, pos + 1);
+}
+
+Parsed comment(string s, int pos) {
+    int p = pos;
+    boolean found = false;
+    while (p + 2 < len(s) && !found) bound (len(s)) {
+        found = s[p] == "-" && s[p + 1] == "-" && s[p + 2] == ">";
+        p = if (found) then p else p + 1;
+    }
+    return if (!found) then Miss("unterminated comment")
+    else Hit(Comment(substring(s, pos, p)), p + 3);
+}
+
+Parsed cdata(string s, int pos) {
+    int p = pos;
+    boolean found = false;
+    while (p + 2 < len(s) && !found) bound (len(s)) {
+        found = s[p] == "]" && s[p + 1] == "]" && s[p + 2] == ">";
+        p = if (found) then p else p + 1;
+    }
+    return if (!found) then Miss("unterminated CDATA section")
+    else Hit(CData(substring(s, pos, p)), p + 3);
+}
+
+Parsed instruction(string s, int pos)
+decreases(len(s) - pos) {
+    int p = pos;
+    while (p < len(s) && letter(s[p])) bound (len(s)) {
+        p = p + 1;
+    }
+    const string target = substring(s, pos, p);
+    p = skip(s, p);
+    const int ds = p;
+    boolean found = false;
+    while (p + 1 < len(s) && !found) bound (len(s)) {
+        found = s[p] == "?" && s[p + 1] == ">";
+        p = if (found) then p else p + 1;
+    }
+    return if (!found) then Miss("unterminated processing instruction")
+    else Hit(PI(target, trim(substring(s, ds, p))), p + 2);
+}
+
+Parsed reference(string s, int pos)
+decreases(len(s) - pos) {
+    return if (pos >= len(s)) then Miss("unterminated entity reference")
+    else if (s[pos] == "#") then numeric(s, pos + 1)
+    else named(s, pos);
+}
+
+Parsed numeric(string s, int pos) {
+    const boolean hex = pos < len(s) && s[pos] == "x";
+    int p = if (hex) then pos + 1 else pos;
+    const int start = p;
+    while (p < len(s) && s[p] != ";") bound (len(s)) {
+        p = p + 1;
+    }
+    return if (p >= len(s)) then Miss("unterminated numeric reference")
+    else if (p == start) then Miss("empty numeric reference")
+    else do {
+        const string digits = substring(s, start, p);
+        const int code = if (hex) then fromhex(digits) else integer(digits);
+        const string ch = charcode(code);
+        if (ch == "") then Miss("invalid character code " + str(code))
+        else Hit(Text(ch), p + 1)
+    };
+}
+
+Parsed named(string s, int pos) {
+    int p = pos;
+    while (p < len(s) && s[p] != ";") bound (len(s)) {
+        p = p + 1;
+    }
+    return if (p >= len(s)) then Miss("unterminated entity reference")
+    else do {
+        const string name = substring(s, pos, p);
+        if (name == "amp") then Hit(Text("&"), p + 1)
+        else if (name == "lt") then Hit(Text("<"), p + 1)
+        else if (name == "gt") then Hit(Text(">"), p + 1)
+        else if (name == "quot") then Hit(Text("\""), p + 1)
+        else if (name == "apos") then Hit(Text("'"), p + 1)
+        else Hit(EntityReference(name), p + 1)
+    };
+}
+
+Parsed opening(string s, int pos)
+decreases(len(s) - pos) {
+    int p = pos;
+    while (p < len(s) && letter(s[p])) bound (len(s)) {
+        p = p + 1;
+    }
+    const string name = substring(s, pos, p);
+    return if (p == pos) then Miss("expected element name")
+    else properties(s, p, name, {});
+}
+
+Parsed properties(string s, int pos, string name, map<string, string> a)
+decreases(len(s) - pos) {
+    int p = skip(s, pos);
+    boolean ok = true;
+    while (p < len(s) && s[p] != ">" && s[p] != "/" && ok) bound (len(s)) {
+        const int ns = p;
+        while (p < len(s) && letter(s[p])) bound (len(s)) {
+            p = p + 1;
+        }
+        const string key = substring(s, ns, p);
+        ok = if (p == ns) then false else ok;
+        p = skip(s, p);
+        ok = if (ok && p < len(s) && s[p] == "=") then ok else false;
+        p = if (ok) then skip(s, p + 1) else p;
+        const string quote = if (ok && p < len(s)) then s[p] else "";
+        ok = if (ok && (quote == "\"" || quote == "'")) then ok else false;
+        p = if (ok) then p + 1 else p;
+        const int vs = p;
+        while (ok && p < len(s) && s[p] != quote) bound (len(s)) {
+            p = p + 1;
+        }
+        const string val = if (ok) then resolve(substring(s, vs, p)) else "";
+        p = if (ok && p < len(s)) then p + 1 else p;
+        a[key] = if (ok) then val else "";
+        p = skip(s, p);
+    }
+    return if (!ok) then Miss("invalid attribute in <" + name + ">")
+    else if (p >= len(s)) then Miss("unterminated element <" + name + ">")
+    else if (s[p] == "/" && p + 1 < len(s) && s[p + 1] == ">") then Hit(Element(name, a, []), p + 2)
+    else if (s[p] == ">") then body(s, p + 1, name, a, [])
+    else Miss("expected > or /> in <" + name + ">");
+}
+
+Parsed body(string s, int pos, string name, map<string, string> a, list<Xml> nodes)
+decreases(len(s) - pos) {
+    return if (pos >= len(s)) then Miss("unclosed element <" + name + ">")
+    else if (pos + 1 < len(s) && s[pos] == "<" && s[pos + 1] == "/") then closing(s, pos + 2, name, a, nodes)
+    else case node(s, pos) of {
+        Miss(e): Miss(e);
+        Hit(child, np): body(s, np, name, a, append(nodes, child));
+    };
+}
+
+Parsed closing(string s, int pos, string expected, map<string, string> a, list<Xml> nodes) {
+    int p = pos;
+    while (p < len(s) && letter(s[p])) bound (len(s)) {
+        p = p + 1;
+    }
+    const string name = substring(s, pos, p);
+    p = skip(s, p);
+    return if (name != expected) then Miss("mismatched tag: expected </" + expected + "> got </" + name + ">")
+    else if (p >= len(s) || s[p] != ">") then Miss("unterminated closing tag </" + name + ">")
+    else Hit(Element(expected, a, nodes), p + 1);
+}
+
+Parsed raw(string s, int pos) {
+    int p = pos;
+    while (p < len(s) && s[p] != "<" && s[p] != "&") bound (len(s)) {
+        p = p + 1;
+    }
+    return if (p == pos) then Miss("unexpected character")
+    else Hit(Text(substring(s, pos, p)), p);
+}
+
+// ===================== Formatter =====================
+
+string render(Xml x, int limit)
+decreases(limit) {
+    return if (limit <= 0) then "..."
+    else case x of {
+        Text(t): escape(t);
+        Comment(t): "<!--" + t + "-->";
+        CData(t): "<![CDATA[" + t + "]]>";
+        PI(target, data): "<?" + target + " " + data + "?>";
+        EntityReference(name): "&" + name + ";";
+        Element(name, a, nodes): do {
+            string r = "<" + name;
+            for k in keys(a) {
+                r = r + " " + k + "=\"" + escape(a[k]) + "\"";
+            }
+            if (len(nodes) == 0) then r + "/>"
+            else do {
+                r = r + ">";
+                for child in nodes {
+                    r = r + render(child, limit - 1);
+                }
+                r + "</" + name + ">"
+            }
+        };
+    };
+}
+
+string extract(Xml x, int limit)
+decreases(limit) {
+    return if (limit <= 0) then ""
+    else case x of {
+        Text(t): t;
+        CData(t): t;
+        Element(name, a, nodes): do {
+            string r = "";
+            for child in nodes {
+                r = r + extract(child, limit - 1);
+            }
+            r
+        };
+        _: "";
+    };
+}
+
+string escape(string s) {
+    const string r1 = replace(s, "&", "&amp;");
+    const string r2 = replace(r1, "<", "&lt;");
+    const string r3 = replace(r2, ">", "&gt;");
+    const string r4 = replace(r3, "\"", "&quot;");
+    return r4;
+}
+
+// Resolve entity references in attribute values
+string resolve(string s) {
+    string result = "";
+    int p = 0;
+    while (p < len(s)) bound (len(s)) {
+        result = if (s[p] != "&") then result + s[p]
+        else do {
+            const int rel = indexOf(substring(s, p + 1, len(s)), ";");
+            const int end = if (rel >= 0) then p + 1 + rel else -1;
+            const string name = if (end > p + 1) then substring(s, p + 1, end) else "";
+            p = if (end > p) then end else len(s) - 1;
+            if (name == "amp") then result + "&"
+            else if (name == "lt") then result + "<"
+            else if (name == "gt") then result + ">"
+            else if (name == "quot") then result + "\""
+            else if (name == "apos") then result + "'"
+            else if (len(name) > 1 && substring(name, 0, 2) == "#x") then result + charcode(fromhex(substring(name, 2, len(name))))
+            else if (len(name) > 0 && substring(name, 0, 1) == "#") then result + charcode(integer(substring(name, 1, len(name))))
+            else result + "&" + name + ";"
+        };
+        p = p + 1;
+    }
+    return result;
+}
+
+// ===================== Helpers =====================
+
+int skip(string s, int pos) {
+    int p = pos;
+    while (p < len(s) && space(s[p])) bound (len(s)) {
+        p = p + 1;
+    }
+    return p;
+}
+
+boolean letter(string c) {
+    return indexOf("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.:!", c) >= 0;
+}
+
+boolean space(string c) {
+    return c == " " || c == "\n" || c == "\r" || c == "\t";
+}
+
+string charcode(int code) {
+    return if (code == 9) then "\t"
+    else if (code == 10) then "\n"
+    else if (code == 13) then "\r"
+    else if (code >= 32 && code <= 126) then substring(" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~", code - 32, code - 31)
+    else "";
+}
+
+int fromhex(string s) {
+    int result = 0;
+    int p = 0;
+    while (p < len(s)) bound (len(s)) {
+        result = result * 16 + hexdigit(s[p]);
+        p = p + 1;
+    }
+    return result;
+}
+
+int hexdigit(string c) {
+    return case c of {
+        "0": 0; "1": 1; "2": 2; "3": 3; "4": 4;
+        "5": 5; "6": 6; "7": 7; "8": 8; "9": 9;
+        "a": 10; "A": 10; "b": 11; "B": 11;
+        "c": 12; "C": 12; "d": 13; "D": 13;
+        "e": 14; "E": 14; "f": 15; "F": 15;
+        _: 0;
+    };
+}

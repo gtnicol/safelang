@@ -1,0 +1,24 @@
+program visibility;
+import io;
+
+// Feature 6: visibility modifiers
+
+public type Point {
+    float x;
+    float y;
+}
+
+public int add(int a, int b) {
+    return a + b;
+}
+
+private int secret(int x) {
+    return x * x;
+}
+
+io:println(add(3, 4));
+io:println(secret(5));
+
+Point p = Point { x: 1.0, y: 2.0 };
+io:println(p.x);
+io:println("Visibility works!");

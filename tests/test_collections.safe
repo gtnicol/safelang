@@ -1,0 +1,102 @@
+program test_collections;
+import std;
+import collections;
+import test;
+
+int x = 0;
+
+test:suite("append and size", [
+    fn() -> do {
+        list<int> items = collections:append([1, 2, 3], 4);
+        test:equal(std:str(collections:size(items)), "4", "size after append");
+        test:equal(std:str(items[3]), "4", "appended element")
+    }
+]);
+
+test:suite("remove", [
+    fn() -> do {
+        list<int> removed = collections:remove([10, 20, 30], 1);
+        test:equal(std:str(collections:size(removed)), "2", "size after remove");
+        test:equal(std:str(removed[0]), "10", "remove first kept");
+        test:equal(std:str(removed[1]), "30", "remove last kept")
+    }
+]);
+
+test:suite("slice", [
+    fn() -> do {
+        list<int> sliced = collections:slice([1, 2, 3, 4, 5], 1, 4);
+        test:equal(std:str(collections:size(sliced)), "3", "slice size");
+        test:equal(std:str(sliced[0]), "2", "slice first");
+        test:equal(std:str(sliced[2]), "4", "slice last")
+    }
+]);
+
+test:suite("reverse", [
+    fn() -> do {
+        list<int> rev = collections:reverse([1, 2, 3]);
+        test:equal(std:str(rev[0]), "3", "reverse first");
+        test:equal(std:str(rev[2]), "1", "reverse last")
+    }
+]);
+
+test:suite("sort", [
+    fn() -> do {
+        list<int> sorted = collections:sort([3, 1, 2]);
+        test:equal(std:str(sorted[0]), "1", "sort first");
+        test:equal(std:str(sorted[2]), "3", "sort last")
+    }
+]);
+
+test:suite("contains keys values", [
+    fn() -> do {
+        map<string, int> m = {"a": 1, "b": 2};
+        list<string> k = collections:keys(m);
+        list<int> v = collections:values(m);
+        test:truthy(collections:contains(m, "a"), "contains true");
+        test:falsy(collections:contains(m, "z"), "contains false");
+        test:equal(std:str(std:len(k)), "2", "keys count");
+        test:equal(std:str(std:len(v)), "2", "values count")
+    }
+]);
+
+test:suite("set operations", [
+    fn() -> do {
+        set<int> s1 = #{1, 2, 3};
+        set<int> s2 = #{2, 3, 4};
+        set<int> u = collections:union(s1, s2);
+        set<int> inter = collections:intersect(s1, s2);
+        set<int> diff = collections:difference(s1, s2);
+        test:truthy(4 in u, "union contains 4");
+        test:truthy(1 in u, "union contains 1");
+        test:truthy(2 in inter, "intersect contains 2");
+        test:falsy(1 in inter, "intersect not contains 1");
+        test:truthy(1 in diff, "difference contains 1");
+        test:falsy(2 in diff, "difference not contains 2")
+    }
+]);
+
+test:suite("add to set", [
+    fn() -> do {
+        set<int> s3 = collections:add(#{1, 2}, 3);
+        test:truthy(3 in s3, "add to set")
+    }
+]);
+
+test:suite("any all count", [
+    fn() -> do {
+        test:truthy(collections:any([1, 2, 3], 2), "any found");
+        test:falsy(collections:any([1, 2, 3], 9), "any not found");
+        test:truthy(collections:all([5, 5, 5], 5), "all same");
+        test:falsy(collections:all([5, 5, 6], 5), "all different");
+        test:equal(std:str(collections:count([1, 2, 1, 3, 1], 1)), "3", "count occurrences")
+    }
+]);
+
+test:suite("unique", [
+    fn() -> do {
+        list<int> uniq = collections:unique([1, 2, 2, 3, 1]);
+        test:equal(std:str(std:len(uniq)), "3", "unique count")
+    }
+]);
+
+test:done();

@@ -1,0 +1,144 @@
+program test_datetime;
+import std;
+import datetime;
+import test;
+
+int x = 0;
+
+test:suite("create and extract", [
+    fn() -> do {
+        Timestamp t = datetime:create(2024, 3, 15, 10, 30, 45);
+        test:equal(std:str(datetime:year(t)), "2024", "year");
+        test:equal(std:str(datetime:month(t)), "3", "month");
+        test:equal(std:str(datetime:day(t)), "15", "day");
+        test:equal(std:str(datetime:hour(t)), "10", "hour");
+        test:equal(std:str(datetime:minute(t)), "30", "minute");
+        test:equal(std:str(datetime:second(t)), "45", "second")
+    }
+]);
+
+test:suite("epoch dates", [
+    fn() -> do {
+        Timestamp t = datetime:create(1970, 1, 1, 0, 0, 0);
+        test:equal(std:str(t.millis), "0", "unix epoch is 0");
+        test:equal(std:str(datetime:year(t)), "1970", "epoch year");
+        test:equal(std:str(datetime:month(t)), "1", "epoch month");
+        test:equal(std:str(datetime:day(t)), "1", "epoch day")
+    },
+    fn() -> do {
+        Timestamp t = datetime:create(2000, 1, 1, 0, 0, 0);
+        test:equal(std:str(datetime:year(t)), "2000", "y2k year");
+        test:equal(std:str(datetime:month(t)), "1", "y2k month")
+    }
+]);
+
+test:suite("format", [
+    fn() -> do {
+        Timestamp t = datetime:create(2024, 3, 15, 10, 30, 45);
+        test:equal(datetime:format(t), "2024-03-15T10:30:45Z", "iso format")
+    },
+    fn() -> do {
+        Timestamp t = datetime:create(2024, 1, 5, 8, 5, 0);
+        test:equal(datetime:format(t), "2024-01-05T08:05:00Z", "zero padded")
+    },
+    fn() -> do {
+        Timestamp t = datetime:create(2024, 12, 31, 23, 59, 59);
+        test:equal(datetime:date(t), "2024-12-31", "date only")
+    }
+]);
+
+test:suite("leap year", [
+    fn() -> test:truthy(datetime:leap(2000), "2000 is leap"),
+    fn() -> test:truthy(datetime:leap(2024), "2024 is leap"),
+    fn() -> test:falsy(datetime:leap(1900), "1900 not leap"),
+    fn() -> test:falsy(datetime:leap(2023), "2023 not leap"),
+    fn() -> test:truthy(datetime:leap(2400), "2400 is leap")
+]);
+
+test:suite("days in month", [
+    fn() -> test:equal(std:str(datetime:daysinmonth(2024, 2)), "29", "feb leap"),
+    fn() -> test:equal(std:str(datetime:daysinmonth(2023, 2)), "28", "feb normal"),
+    fn() -> test:equal(std:str(datetime:daysinmonth(2024, 1)), "31", "january"),
+    fn() -> test:equal(std:str(datetime:daysinmonth(2024, 4)), "30", "april"),
+    fn() -> test:equal(std:str(datetime:daysinmonth(2024, 12)), "31", "december")
+]);
+
+test:suite("add days", [
+    fn() -> do {
+        Timestamp t = datetime:create(2024, 3, 15, 12, 0, 0);
+        Timestamp t2 = datetime:add(t, 10);
+        test:equal(std:str(datetime:day(t2)), "25", "add 10 days")
+    },
+    fn() -> do {
+        Timestamp t = datetime:create(2024, 1, 30, 0, 0, 0);
+        Timestamp t2 = datetime:add(t, 2);
+        test:equal(std:str(datetime:month(t2)), "2", "cross month");
+        test:equal(std:str(datetime:day(t2)), "1", "cross month day")
+    }
+]);
+
+test:suite("diff", [
+    fn() -> do {
+        Timestamp a = datetime:create(2024, 3, 15, 0, 0, 0);
+        Timestamp b = datetime:create(2024, 3, 10, 0, 0, 0);
+        test:equal(std:str(datetime:diff(a, b)), "5", "5 day diff")
+    },
+    fn() -> do {
+        Timestamp a = datetime:create(2024, 1, 1, 0, 0, 0);
+        Timestamp b = datetime:create(2024, 1, 1, 0, 0, 0);
+        test:equal(std:str(datetime:diff(a, b)), "0", "same day diff")
+    }
+]);
+
+test:suite("weekday", [
+    fn() -> do {
+        Timestamp t = datetime:create(1970, 1, 1, 0, 0, 0);
+        test:equal(std:str(datetime:weekday(t)), "3", "1970-01-01 is thursday (3)")
+    }
+]);
+
+test:suite("now", [
+    fn() -> do {
+        Timestamp t = datetime:now();
+        test:truthy(datetime:year(t) >= 2024, "current year reasonable");
+        test:truthy(t.millis > 0, "millis positive")
+    }
+]);
+
+test:suite("end of year", [
+    fn() -> do {
+        Timestamp t = datetime:create(2024, 12, 31, 23, 59, 59);
+        test:equal(std:str(datetime:year(t)), "2024", "dec 31 year");
+        test:equal(std:str(datetime:month(t)), "12", "dec 31 month");
+        test:equal(std:str(datetime:day(t)), "31", "dec 31 day");
+        test:equal(std:str(datetime:hour(t)), "23", "dec 31 hour");
+        test:equal(std:str(datetime:minute(t)), "59", "dec 31 minute");
+        test:equal(std:str(datetime:second(t)), "59", "dec 31 second")
+    }
+]);
+
+test:suite("cross year boundary", [
+    fn() -> do {
+        Timestamp t = datetime:create(2024, 12, 31, 0, 0, 0);
+        Timestamp t2 = datetime:add(t, 1);
+        test:equal(std:str(datetime:year(t2)), "2025", "next year");
+        test:equal(std:str(datetime:month(t2)), "1", "january");
+        test:equal(std:str(datetime:day(t2)), "1", "first day")
+    }
+]);
+
+test:suite("feb 29 leap", [
+    fn() -> do {
+        Timestamp t = datetime:create(2024, 2, 29, 12, 0, 0);
+        test:equal(std:str(datetime:month(t)), "2", "feb 29 month");
+        test:equal(std:str(datetime:day(t)), "29", "feb 29 day")
+    }
+]);
+
+test:suite("epoch via create", [
+    fn() -> test:equal(std:str(datetime:create(1970, 1, 1, 0, 0, 0).millis), "0", "unix epoch millis 0"),
+    fn() -> test:equal(std:str(datetime:create(1970, 1, 2, 0, 0, 0).millis), "86400000", "day 2 millis"),
+    fn() -> test:equal(std:str(datetime:year(datetime:create(1971, 1, 1, 0, 0, 0))), "1971", "1971 roundtrip")
+]);
+
+test:done();

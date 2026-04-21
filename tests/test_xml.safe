@@ -1,0 +1,327 @@
+program test_xml;
+import std;
+import collections;
+import file { write, delete };
+import xml;
+import test;
+
+int x = 0;
+
+test:suite("parse self-closing", [
+    fn() -> do {
+        ParseResult r = xml:parse("<hello/>");
+        test:equal(case r of { Ok(v): xml:tag(v); Err(e): e; }, "hello", "tag name");
+        test:equal(case r of { Ok(v): std:str(xml:count(v)); Err(e): e; }, "0", "no children");
+        test:equal(case r of { Ok(v): xml:format(v); Err(e): e; }, "<hello/>", "format self-closing")
+    }
+]);
+
+test:suite("parse element with text", [
+    fn() -> do {
+        ParseResult r = xml:parse("<greeting>hello world</greeting>");
+        test:equal(case r of { Ok(v): xml:tag(v); Err(e): e; }, "greeting", "tag");
+        test:equal(case r of { Ok(v): xml:text(v); Err(e): e; }, "hello world", "text content");
+        test:equal(case r of { Ok(v): std:str(xml:count(v)); Err(e): e; }, "1", "one text child")
+    }
+]);
+
+test:suite("parse attributes", [
+    fn() -> do {
+        ParseResult r = xml:parse("<a key=\"val\" id=\"1\"/>");
+        Xml elem = case r of { Ok(v): v; Err(e): Text(""); };
+        test:equal(xml:attr(elem, "key"), "val", "attr key");
+        test:equal(xml:attr(elem, "id"), "1", "attr id");
+        test:equal(xml:attr(elem, "missing"), "", "attr missing")
+    },
+    fn() -> do {
+        ParseResult r = xml:parse("<a key='val'/>");
+        test:equal(case r of { Ok(v): xml:attr(v, "key"); Err(e): e; }, "val", "single quotes")
+    }
+]);
+
+test:suite("parse nested elements", [
+    fn() -> do {
+        ParseResult r = xml:parse("<root><a>1</a><b>2</b></root>");
+        Xml root = case r of { Ok(v): v; Err(e): Text(""); };
+        test:equal(xml:tag(root), "root", "root tag");
+        test:equal(std:str(xml:count(root)), "2", "two children");
+        const list<Xml> kids = xml:children(root);
+        test:equal(xml:tag(kids[0]), "a", "first child tag");
+        test:equal(xml:text(kids[0]), "1", "first child text");
+        test:equal(xml:tag(kids[1]), "b", "second child tag");
+        test:equal(xml:text(kids[1]), "2", "second child text")
+    }
+]);
+
+test:suite("parse mixed content", [
+    fn() -> do {
+        ParseResult r = xml:parse("<p>Hello <b>world</b>!</p>");
+        Xml p = case r of { Ok(v): v; Err(e): Text(""); };
+        test:equal(xml:text(p), "Hello world!", "concatenated text");
+        test:equal(std:str(xml:count(p)), "3", "three children")
+    }
+]);
+
+test:suite("parse deeply nested", [
+    fn() -> do {
+        ParseResult r = xml:parse("<a><b><c>deep</c></b></a>");
+        Xml a = case r of { Ok(v): v; Err(e): Text(""); };
+        const list<Xml> bs = xml:children(a);
+        const list<Xml> cs = xml:children(bs[0]);
+        test:equal(xml:text(cs[0]), "deep", "deep text");
+        test:equal(xml:tag(cs[0]), "c", "deep tag")
+    }
+]);
+
+test:suite("parse whitespace", [
+    fn() -> test:equal(case xml:parse("  <root/>  ") of { Ok(v): xml:tag(v); Err(e): e; }, "root", "leading trailing spaces"),
+    fn() -> test:equal(case xml:parse("<a  key = \"val\" />") of { Ok(v): xml:attr(v, "key"); Err(e): e; }, "val", "spaces around =")
+]);
+
+test:suite("parse comment", [
+    fn() -> test:equal(case xml:parse("<!-- comment --><root/>") of { Ok(v): xml:tag(v); Err(e): e; }, "root", "skip comment before root"),
+    fn() -> do {
+        ParseResult r = xml:parse("<root><!-- inner --><a/></root>");
+        test:equal(case r of { Ok(v): std:str(xml:count(v)); Err(e): e; }, "2", "comment preserved as child");
+        Xml root = case r of { Ok(v): v; Err(e): Text(""); };
+        const list<Xml> kids = xml:children(root);
+        const string ct = case kids[0] of { Comment(t): t; _: "none"; };
+        test:equal(ct, " inner ", "comment text preserved")
+    }
+]);
+
+test:suite("parse xml declaration", [
+    fn() -> test:equal(case xml:parse("<?xml version=\"1.0\"?><root/>") of { Ok(v): xml:tag(v); Err(e): e; }, "root", "skip xml declaration"),
+    fn() -> test:equal(case xml:parse("<?xml version=\"1.0\" encoding=\"utf-8\"?><root>data</root>") of { Ok(v): xml:text(v); Err(e): e; }, "data", "skip declaration with encoding")
+]);
+
+test:suite("parse entity references", [
+    fn() -> test:equal(case xml:parse("<p>A &amp; B</p>") of { Ok(v): xml:text(v); Err(e): e; }, "A & B", "ampersand"),
+    fn() -> test:equal(case xml:parse("<p>&lt;tag&gt;</p>") of { Ok(v): xml:text(v); Err(e): e; }, "<tag>", "lt gt"),
+    fn() -> test:equal(case xml:parse("<p>&quot;hi&quot;</p>") of { Ok(v): xml:text(v); Err(e): e; }, "\"hi\"", "quot"),
+    fn() -> test:equal(case xml:parse("<p>&apos;hi&apos;</p>") of { Ok(v): xml:text(v); Err(e): e; }, "'hi'", "apos"),
+    fn() -> test:equal(case xml:parse("<a val=\"a&amp;b\"/>") of { Ok(v): xml:attr(v, "val"); Err(e): e; }, "a&b", "entity in attribute")
+]);
+
+test:suite("parse errors", [
+    fn() -> test:truthy(case xml:parse("") of { Ok(v): false; Err(e): true; }, "empty input"),
+    fn() -> test:truthy(case xml:parse("<a></b>") of { Ok(v): false; Err(e): true; }, "mismatched tags"),
+    fn() -> test:truthy(case xml:parse("<a>") of { Ok(v): false; Err(e): true; }, "unclosed element"),
+    fn() -> test:truthy(case xml:parse("<a/> extra") of { Ok(v): false; Err(e): true; }, "trailing content"),
+    fn() -> test:truthy(case xml:parse("just text") of { Ok(v): false; Err(e): true; }, "text without element"),
+    fn() -> test:truthy(case xml:parse("<a key>") of { Ok(v): false; Err(e): true; }, "attribute without value"),
+    fn() -> test:truthy(case xml:parse("<!-- unterminated") of { Ok(v): false; Err(e): true; }, "unterminated comment")
+]);
+
+test:suite("format elements", [
+    fn() -> test:equal(xml:format(Element("br", {}, [])), "<br/>", "self-closing"),
+    fn() -> test:equal(xml:format(Element("p", {}, [Text("hi")])), "<p>hi</p>", "with text"),
+    fn() -> test:equal(xml:format(Element("a", {"href": "url"}, [Text("link")])), "<a href=\"url\">link</a>", "with attr"),
+    fn() -> test:equal(xml:format(Element("img", {"src": "a.png", "alt": "pic"}, [])), "<img src=\"a.png\" alt=\"pic\"/>", "multiple attrs self-closing"),
+    fn() -> test:equal(xml:format(Text("hello")), "hello", "text node")
+]);
+
+test:suite("format nested", [
+    fn() -> do {
+        Xml nested = Element("ul", {}, [
+            Element("li", {}, [Text("one")]),
+            Element("li", {}, [Text("two")])
+        ]);
+        test:equal(xml:format(nested), "<ul><li>one</li><li>two</li></ul>", "nested elements")
+    }
+]);
+
+test:suite("format escaping", [
+    fn() -> test:equal(xml:format(Text("A & B")), "A &amp; B", "escape ampersand"),
+    fn() -> test:equal(xml:format(Text("<tag>")), "&lt;tag&gt;", "escape angle brackets"),
+    fn() -> test:equal(xml:format(Element("a", {"val": "a\"b"}, [])), "<a val=\"a&quot;b\"/>", "escape quote in attr")
+]);
+
+test:suite("round trip", [
+    fn() -> do {
+        const string input = "<root attr=\"val\"><child>text</child></root>";
+        ParseResult r1 = xml:parse(input);
+        const string formatted = case r1 of { Ok(v): xml:format(v); Err(e): "error"; };
+        ParseResult r2 = xml:parse(formatted);
+        const string again = case r2 of { Ok(v): xml:format(v); Err(e): "error"; };
+        test:equal(formatted, input, "round trip matches input");
+        test:equal(formatted, again, "round trip stable")
+    },
+    fn() -> do {
+        const string input = "<p>Hello <b>world</b>!</p>";
+        ParseResult r = xml:parse(input);
+        const string formatted = case r of { Ok(v): xml:format(v); Err(e): "error"; };
+        test:equal(formatted, input, "mixed content round trip")
+    }
+]);
+
+test:suite("tag helper", [
+    fn() -> test:equal(xml:tag(Element("div", {}, [])), "div", "element tag"),
+    fn() -> test:equal(xml:tag(Text("hi")), "", "text tag empty")
+]);
+
+test:suite("attrs helper", [
+    fn() -> do {
+        Xml elem = Element("a", {"href": "url", "id": "1"}, []);
+        test:equal(std:str(std:len(collections:keys(xml:attrs(elem)))), "2", "attrs count");
+        test:equal(std:str(std:len(collections:keys(xml:attrs(Text("hi"))))), "0", "text attrs empty")
+    }
+]);
+
+test:suite("children helper", [
+    fn() -> do {
+        Xml parent = Element("ul", {}, [Element("li", {}, [Text("a")]), Element("li", {}, [Text("b")])]);
+        test:equal(std:str(std:len(xml:children(parent))), "2", "children count");
+        test:equal(std:str(std:len(xml:children(Text("hi")))), "0", "text children empty")
+    }
+]);
+
+test:suite("find helper", [
+    fn() -> do {
+        ParseResult r = xml:parse("<root><item id=\"1\"/><other/><item id=\"2\"/></root>");
+        Xml root = case r of { Ok(v): v; Err(e): Text(""); };
+        const list<Xml> items = xml:find(root, "item");
+        test:equal(std:str(std:len(items)), "2", "find count");
+        test:equal(xml:attr(items[0], "id"), "1", "find first");
+        test:equal(xml:attr(items[1], "id"), "2", "find second");
+        test:equal(std:str(std:len(xml:find(root, "missing"))), "0", "find none")
+    }
+]);
+
+test:suite("count helper", [
+    fn() -> test:equal(std:str(xml:count(Element("a", {}, [Text("1"), Text("2")]))), "2", "count children"),
+    fn() -> test:equal(std:str(xml:count(Element("a", {}, []))), "0", "count empty"),
+    fn() -> test:equal(std:str(xml:count(Text("hi"))), "0", "count text")
+]);
+
+test:suite("pattern match", [
+    fn() -> do {
+        ParseResult r = xml:parse("<item val=\"42\"/>");
+        Xml elem = case r of { Ok(v): v; Err(e): Text(""); };
+        const string result = case elem of {
+            Element(t, a, c): t + ":" + xml:attr(elem, "val");
+            _: "other";
+        };
+        test:equal(result, "item:42", "match element")
+    }
+]);
+
+test:suite("build xml", [
+    fn() -> test:equal(xml:format(Element("br", {}, [])), "<br/>", "build self-closing"),
+    fn() -> test:equal(xml:format(Element("p", {}, [Text("hi")])), "<p>hi</p>", "build with text"),
+    fn() -> do {
+        Xml doc = Element("html", {}, [
+            Element("head", {}, [Element("title", {}, [Text("Test")])]),
+            Element("body", {}, [Element("p", {}, [Text("Hello")])])
+        ]);
+        test:equal(xml:format(doc), "<html><head><title>Test</title></head><body><p>Hello</p></body></html>", "build document")
+    }
+]);
+
+test:suite("parse cdata", [
+    fn() -> do {
+        ParseResult r = xml:parse("<root><![CDATA[raw <text> & stuff]]></root>");
+        Xml root = case r of { Ok(v): v; Err(e): Text(""); };
+        test:equal(xml:text(root), "raw <text> & stuff", "cdata text content");
+        const list<Xml> kids = xml:children(root);
+        const string ct = case kids[0] of { CData(t): t; _: "none"; };
+        test:equal(ct, "raw <text> & stuff", "cdata node preserved")
+    },
+    fn() -> test:truthy(case xml:parse("<root><![CDATA[unterminated") of { Ok(v): false; Err(e): true; }, "unterminated cdata")
+]);
+
+test:suite("parse processing instruction", [
+    fn() -> do {
+        ParseResult r = xml:parse("<root><?style type=\"text/css\"?><a/></root>");
+        test:equal(case r of { Ok(v): std:str(xml:count(v)); Err(e): e; }, "2", "pi preserved as child");
+        Xml root = case r of { Ok(v): v; Err(e): Text(""); };
+        const list<Xml> kids = xml:children(root);
+        const string target = case kids[0] of { PI(t, d): t; _: "none"; };
+        test:equal(target, "style", "pi target")
+    },
+    fn() -> test:equal(case xml:parse("<?xml version=\"1.0\"?><root/>") of { Ok(v): xml:tag(v); Err(e): e; }, "root", "skip xml declaration")
+]);
+
+test:suite("parse numeric entities", [
+    fn() -> test:equal(case xml:parse("<p>&#65;</p>") of { Ok(v): xml:text(v); Err(e): e; }, "A", "decimal entity"),
+    fn() -> test:equal(case xml:parse("<p>&#x41;</p>") of { Ok(v): xml:text(v); Err(e): e; }, "A", "hex entity"),
+    fn() -> test:equal(case xml:parse("<p>&#60;&#62;</p>") of { Ok(v): xml:text(v); Err(e): e; }, "<>", "decimal lt gt"),
+    fn() -> test:equal(case xml:parse("<p>&#x26;</p>") of { Ok(v): xml:text(v); Err(e): e; }, "&", "hex ampersand"),
+    fn() -> test:equal(case xml:parse("<a val=\"&#65;B\"/>") of { Ok(v): xml:attr(v, "val"); Err(e): e; }, "AB", "numeric in attribute")
+]);
+
+test:suite("parse entity references", [
+    fn() -> do {
+        ParseResult r = xml:parse("<p>&custom;</p>");
+        test:equal(case r of { Ok(v): std:str(xml:count(v)); Err(e): e; }, "1", "entity ref child count");
+        Xml root = case r of { Ok(v): v; Err(e): Text(""); };
+        const list<Xml> kids = xml:children(root);
+        const string name = case kids[0] of { EntityReference(n): n; _: "none"; };
+        test:equal(name, "custom", "entity ref name")
+    },
+    fn() -> do {
+        ParseResult r = xml:parse("<p>hello &nbsp; world</p>");
+        test:equal(case r of { Ok(v): std:str(xml:count(v)); Err(e): e; }, "3", "entity ref splits text");
+        test:equal(case r of { Ok(v): xml:format(v); Err(e): e; }, "<p>hello &nbsp; world</p>", "entity ref round trip")
+    },
+    fn() -> test:truthy(case xml:parse("<p>&unterminated</p>") of { Ok(v): false; Err(e): true; }, "unterminated entity ref")
+]);
+
+test:suite("format new types", [
+    fn() -> test:equal(xml:format(Comment(" a comment ")), "<!-- a comment -->", "format comment"),
+    fn() -> test:equal(xml:format(CData("raw <data>")), "<![CDATA[raw <data>]]>", "format cdata"),
+    fn() -> test:equal(xml:format(PI("style", "href=\"s.css\"")), "<?style href=\"s.css\"?>", "format pi"),
+    fn() -> test:equal(xml:format(EntityReference("nbsp")), "&nbsp;", "format entity ref")
+]);
+
+test:suite("round trip new types", [
+    fn() -> do {
+        const string input = "<root><!-- note --><a/></root>";
+        ParseResult r = xml:parse(input);
+        test:equal(case r of { Ok(v): xml:format(v); Err(e): e; }, input, "comment round trip")
+    },
+    fn() -> do {
+        const string input = "<root><![CDATA[data]]></root>";
+        ParseResult r = xml:parse(input);
+        test:equal(case r of { Ok(v): xml:format(v); Err(e): e; }, input, "cdata round trip")
+    },
+    fn() -> do {
+        const string input = "<root><?pi data?></root>";
+        ParseResult r = xml:parse(input);
+        test:equal(case r of { Ok(v): xml:format(v); Err(e): e; }, input, "pi round trip")
+    },
+    fn() -> do {
+        const string input = "<root>&custom;</root>";
+        ParseResult r = xml:parse(input);
+        test:equal(case r of { Ok(v): xml:format(v); Err(e): e; }, input, "entity ref round trip")
+    }
+]);
+
+test:suite("pattern match all variants", [
+    fn() -> do {
+        const string r1 = case Element("a", {}, []) of { Element(t, a, c): "element"; _: "other"; };
+        const string r2 = case Text("hi") of { Text(t): "text"; _: "other"; };
+        const string r3 = case Comment("c") of { Comment(t): "comment"; _: "other"; };
+        const string r4 = case CData("d") of { CData(t): "cdata"; _: "other"; };
+        const string r5 = case PI("t", "d") of { PI(t, d): "pi"; _: "other"; };
+        const string r6 = case EntityReference("e") of { EntityReference(n): "entityref"; _: "other"; };
+        test:equal(r1, "element", "match element");
+        test:equal(r2, "text", "match text");
+        test:equal(r3, "comment", "match comment");
+        test:equal(r4, "cdata", "match cdata");
+        test:equal(r5, "pi", "match pi");
+        test:equal(r6, "entityref", "match entity ref")
+    }
+]);
+
+test:suite("load xml file", [
+    fn() -> do {
+        file:write("/tmp/test_xml_safe.xml", "<root><child>data</child></root>");
+        const string result = case xml:load("/tmp/test_xml_safe.xml") of { Ok(v): xml:text(v); Err(e): e; };
+        file:delete("/tmp/test_xml_safe.xml");
+        test:equal(result, "data", "load xml file")
+    },
+    fn() -> test:truthy(case xml:load("/tmp/nonexistent_safe.xml") of { Ok(v): false; Err(e): true; }, "missing xml file")
+]);
+
+test:done();

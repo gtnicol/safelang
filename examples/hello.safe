@@ -1,0 +1,5 @@
+program hello;
+import io;
+
+io:println("Hello, World!");
+io:println("SAFE Language v1.0");

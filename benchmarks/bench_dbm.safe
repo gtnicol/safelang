@@ -1,0 +1,38 @@
+program bench_dbm;
+import io;
+import std;
+import dbm;
+import binary;
+import file;
+
+const int N = 10000;
+const string PATH = "/tmp/_safe_bench_dbm.db";
+
+int t0 = std:time();
+DBM db = dbm:create(PATH);
+
+for i in 0..(N-1) {
+    string k = "k" + std:str(i);
+    bytes v = binary:encode("v" + std:str(i));
+    db = dbm:put(db, k, v);
+}
+
+int t1 = std:time();
+
+int found = 0;
+for i in 0..(N-1) {
+    string k = "k" + std:str(i);
+    boolean exists = dbm:has(db, k);
+    found = if (exists) then found + 1 else found;
+}
+
+int t2 = std:time();
+
+dbm:close(db);
+file:delete(PATH);
+
+io:println("=== dbm ===");
+io:println("records: " + std:str(N));
+io:println("write: " + std:str(t1 - t0) + "ms");
+io:println("read: " + std:str(t2 - t1) + "ms");
+io:println("found: " + std:str(found));

@@ -1,0 +1,40 @@
+program test_tree;
+import std;
+import tree;
+import test;
+
+int x = 0;
+
+test:suite("tree", [
+    fn() -> do {
+        Tree t = Empty;
+        test:suite("empty tree", [
+            fn() -> test:truthy(tree:blank(t), "empty is blank"),
+            fn() -> test:equal(std:str(tree:count(t)), "0", "empty count 0")
+        ]);
+        Tree t1 = tree:insert(t, 5);
+        Tree t2 = tree:insert(t1, 3);
+        Tree t3 = tree:insert(t2, 7);
+        Tree t4 = tree:insert(t3, 1);
+        Tree t5 = tree:insert(t4, 9);
+        test:suite("insert and find", [
+            fn() -> test:falsy(tree:blank(t5), "not blank after insert"),
+            fn() -> test:equal(std:str(tree:count(t5)), "5", "count 5"),
+            fn() -> test:truthy(tree:find(t5, 3), "find 3"),
+            fn() -> test:truthy(tree:find(t5, 9), "find 9"),
+            fn() -> test:falsy(tree:find(t5, 4), "not find 4")
+        ]);
+        test:suite("smallest and largest", [
+            fn() -> test:equal(std:str(tree:smallest(t5)), "1", "smallest"),
+            fn() -> test:equal(std:str(tree:largest(t5)), "9", "largest")
+        ]);
+        Tree t6 = tree:drop(t5, 3);
+        test:suite("drop", [
+            fn() -> test:equal(std:str(tree:count(t6)), "4", "count after drop"),
+            fn() -> test:falsy(tree:find(t6, 3), "dropped not found"),
+            fn() -> test:truthy(tree:find(t6, 5), "others remain")
+        ])
+    }
+]);
+
+test:done();

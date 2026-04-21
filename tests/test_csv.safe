@@ -1,0 +1,117 @@
+program test_csv;
+import std;
+import file { write, delete };
+import csv;
+import test;
+
+int x = 0;
+
+test:suite("parse simple", [
+    fn() -> do {
+        const list<list<string>> rows = csv:parse("a,b,c\n1,2,3\n4,5,6");
+        test:equal(std:str(std:len(rows)), "3", "three rows");
+        test:equal(rows[0][0], "a", "first field");
+        test:equal(rows[0][2], "c", "third field");
+        test:equal(rows[2][1], "5", "last row middle")
+    }
+]);
+
+test:suite("parse quoted", [
+    fn() -> do {
+        const list<list<string>> rows = csv:parse("name,desc\nAlice,\"has, commas\"\nBob,\"simple\"");
+        test:equal(std:str(std:len(rows)), "3", "three rows");
+        test:equal(rows[1][1], "has, commas", "comma in quotes");
+        test:equal(rows[2][1], "simple", "simple quoted")
+    }
+]);
+
+test:suite("parse escaped quotes", [
+    fn() -> do {
+        const list<list<string>> rows = csv:parse("val\n\"a\"\"b\"");
+        test:equal(rows[1][0], "a\"b", "double quote escape")
+    }
+]);
+
+test:suite("parse blank lines", [
+    fn() -> do {
+        const list<list<string>> rows = csv:parse("a,b\n\nc,d");
+        test:equal(std:str(std:len(rows)), "2", "skip blank line")
+    }
+]);
+
+test:suite("records", [
+    fn() -> do {
+        const list<map<string, string>> recs = csv:records("name,age\nAlice,30\nBob,25");
+        test:equal(std:str(std:len(recs)), "2", "two records");
+        io:println(std:str(recs[0]["name"]));
+        test:equal(recs[0]["name"], "Alice", "first name");
+        test:equal(recs[0]["age"], "30", "first age");
+        test:equal(recs[1]["name"], "Bob", "second name")
+    }
+]);
+
+test:suite("format", [
+    fn() -> test:equal(csv:format([["a", "b"], ["1", "2"]]), "a,b\n1,2", "simple format"),
+    fn() -> test:equal(csv:format([["has,comma", "ok"]]), "\"has,comma\",ok", "quote field with comma"),
+    fn() -> test:equal(csv:format([["has\"quote"]]), "\"has\"\"quote\"", "escape quotes in format")
+]);
+
+test:suite("line", [
+    fn() -> test:equal(csv:line(["a", "b", "c"]), "a,b,c", "simple line"),
+    fn() -> test:equal(csv:line(["one"]), "one", "single field"),
+    fn() -> test:equal(csv:line([]), "", "empty line")
+]);
+
+test:suite("round trip", [
+    fn() -> do {
+        const string input = "name,age\nAlice,30\nBob,25";
+        const list<list<string>> parsed = csv:parse(input);
+        const string output = csv:format(parsed);
+        test:equal(output, input, "round trip")
+    }
+]);
+
+test:suite("load file", [
+    fn() -> do {
+        file:write("/tmp/test_csv_safe.csv", "a,b\n1,2\n3,4");
+        const list<list<string>> rows = csv:load("/tmp/test_csv_safe.csv");
+        file:delete("/tmp/test_csv_safe.csv");
+        test:equal(std:str(std:len(rows)), "3", "load csv file")
+    },
+    fn() -> test:equal(std:str(std:len(csv:load("/tmp/nonexistent.csv"))), "0", "load missing file")
+]);
+
+test:suite("open file as records", [
+    fn() -> do {
+        file:write("/tmp/test_csv_rec.csv", "name,age\nAlice,30\nBob,25");
+        const list<map<string, string>> recs = csv:open("/tmp/test_csv_rec.csv");
+        file:delete("/tmp/test_csv_rec.csv");
+        test:equal(std:str(std:len(recs)), "2", "open records count");
+        test:equal(recs[0]["name"], "Alice", "open first name")
+    }
+]);
+
+test:suite("single column", [
+    fn() -> do {
+        const list<list<string>> rows = csv:parse("val\n1\n2\n3");
+        test:equal(std:str(std:len(rows)), "4", "single col rows");
+        test:equal(rows[1][0], "1", "single col value")
+    }
+]);
+
+test:suite("empty fields", [
+    fn() -> do {
+        const list<list<string>> rows = csv:parse("a,,c\n1,,3");
+        test:equal(rows[0][1], "", "empty middle field");
+        test:equal(rows[1][1], "", "empty data field")
+    }
+]);
+
+test:suite("quoting in format", [
+    fn() -> test:equal(csv:line(["has,comma"]), "\"has,comma\"", "comma quoted"),
+    fn() -> test:equal(csv:line(["has\"quote"]), "\"has\"\"quote\"", "quote escaped"),
+    fn() -> test:equal(csv:line(["plain"]), "plain", "plain unquoted"),
+    fn() -> test:equal(csv:line([]), "", "empty row")
+]);
+
+test:done();

@@ -1,0 +1,53 @@
+module functional;
+
+public list<?U> map(list<?T> items, fn(?T) -> ?U transform) {
+    list<?U> result = [];
+    for item in items {
+        result = append(result, transform(item));
+    }
+    return result;
+}
+
+public list<?T> filter(list<?T> items, fn(?T) -> boolean predicate) {
+    list<?T> result = [];
+    for item in items {
+        result = if (predicate(item)) then append(result, item) else result;
+    }
+    return result;
+}
+
+public ?U fold(list<?T> items, ?U initial, fn(?U, ?T) -> ?U combine) {
+    ?U accumulator = initial;
+    for item in items {
+        accumulator = combine(accumulator, item);
+    }
+    return accumulator;
+}
+
+public list<?U> flatmap(list<?T> items, fn(?T) -> list<?U> transform) {
+    list<?U> result = [];
+    for item in items {
+        list<?U> mapped = transform(item);
+        for element in mapped {
+            result = append(result, element);
+        }
+    }
+    return result;
+}
+
+public void each(list<?T> items, fn(?T) -> void action) {
+    for item in items {
+        action(item);
+    }
+}
+
+public ?T converge(?T initial, fn(?T) -> ?T apply, int limit) {
+    ?T current = initial;
+    boolean stable = false;
+    for i in range(limit) {
+        ?T next = if (stable) then current else apply(current);
+        stable = if (next == current) then true else stable;
+        current = next;
+    }
+    return current;
+}

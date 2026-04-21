@@ -1,0 +1,40 @@
+program test_queue;
+import std;
+import queue;
+import test;
+
+int x = 0;
+
+test:suite("queue", [
+    fn() -> do {
+        Queue q = queue:create();
+        test:suite("create and blank", [
+            fn() -> test:truthy(queue:blank(q), "new queue is blank")
+        ]);
+        Queue q1 = queue:enqueue(q, 10);
+        Queue q2 = queue:enqueue(q1, 20);
+        Queue q3 = queue:enqueue(q2, 30);
+        test:suite("enqueue and front", [
+            fn() -> test:falsy(queue:blank(q3), "enqueued not blank"),
+            fn() -> test:equal(std:str(queue:front(q3)), "10", "front is first enqueued")
+        ]);
+        Queue q4 = queue:dequeue(q3);
+        test:suite("dequeue", [
+            fn() -> test:equal(std:str(queue:front(q4)), "20", "front after dequeue")
+        ])
+    }
+]);
+
+test:suite("fifo order", [
+    fn() -> do {
+        Queue q = queue:enqueue(queue:enqueue(queue:enqueue(queue:create(), "a"), "b"), "c");
+        test:equal(queue:front(q), "a", "first in first out");
+        Queue q2 = queue:dequeue(q);
+        test:equal(queue:front(q2), "b", "second after dequeue");
+        Queue q3 = queue:dequeue(q2);
+        test:equal(queue:front(q3), "c", "third after two dequeues");
+        test:truthy(queue:blank(queue:dequeue(q3)), "empty after all dequeued")
+    }
+]);
+
+test:done();

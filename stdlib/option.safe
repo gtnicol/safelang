@@ -1,0 +1,17 @@
+module option;
+
+public enum Option { Some(?T), None }
+
+public ?T unwrap(Option o, ?T d) {
+    return case o of {
+        Some(v): v;
+        None: d;
+    };
+}
+
+public boolean present(Option o) {
+    return case o of {
+        Some(v): true;
+        None: false;
+    };
+}

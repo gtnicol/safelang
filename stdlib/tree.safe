@@ -1,0 +1,77 @@
+module tree;
+
+public enum Tree {
+    Empty,
+    Node(?T, Tree, Tree)
+}
+
+public Tree insert(Tree t, ?T v) {
+    return case t of {
+        Empty: Node(v, Empty, Empty);
+        Node(x, left, right): if (v < x)
+            then Node(x, insert(left, v), right)
+            else Node(x, left, insert(right, v));
+    };
+}
+
+public boolean find(Tree t, ?T v) {
+    return case t of {
+        Empty: false;
+        Node(x, left, right): if (x == v) then true
+            else if (v < x) then find(left, v)
+            else find(right, v);
+    };
+}
+
+public ?T smallest(Tree t) requires !blank(t) {
+    return case t of {
+        Node(x, left, right): case left of {
+            Empty: x;
+            Node(lx, ll, lr): smallest(left);
+        };
+    };
+}
+
+public ?T largest(Tree t) requires !blank(t) {
+    return case t of {
+        Node(x, left, right): case right of {
+            Empty: x;
+            Node(rx, rl, rr): largest(right);
+        };
+    };
+}
+
+public int count(Tree t) {
+    return case t of {
+        Empty: 0;
+        Node(x, left, right): 1 + count(left) + count(right);
+    };
+}
+
+public boolean blank(Tree t) {
+    return case t of {
+        Empty: true;
+        Node(x, left, right): false;
+    };
+}
+
+public Tree drop(Tree t, ?T v) {
+    return case t of {
+        Empty: Empty;
+        Node(x, left, right): if (v < x)
+            then Node(x, drop(left, v), right)
+            else if (x < v)
+            then Node(x, left, drop(right, v))
+            else merge(left, right);
+    };
+}
+
+public Tree merge(Tree left, Tree right) {
+    return case left of {
+        Empty: right;
+        Node(lx, ll, lr): case right of {
+            Empty: left;
+            Node(rx, rl, rr): Node(smallest(right), left, drop(right, smallest(right)));
+        };
+    };
+}

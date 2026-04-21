@@ -1,0 +1,47 @@
+program test_dbm;
+import std;
+import binary;
+import page;
+import file;
+import dbm;
+import test;
+
+int x = 0;
+
+test:suite("dbm", [
+    fn() -> do {
+        string stamp = std:str(std:time());
+        string path = `/tmp/safe_test_dbm_${stamp}.db`;
+        DBM store = dbm:create(path);
+        DBM store1 = dbm:put(store, "name", binary:encode("Alice"));
+        DBM store2 = dbm:put(store1, "age", binary:encode("30"));
+        test:suite("has and get", [
+            fn() -> test:truthy(dbm:has(store2, "name"), "has name"),
+            fn() -> test:truthy(dbm:has(store2, "age"), "has age"),
+            fn() -> test:falsy(dbm:has(store2, "missing"), "not has missing"),
+            fn() -> test:equal(binary:decode(dbm:get(store2, "name")), "Alice", "get name"),
+            fn() -> test:equal(binary:decode(dbm:get(store2, "age")), "30", "get age")
+        ]);
+        DBM store3 = dbm:put(store2, "name", binary:encode("Bob"));
+        test:suite("update existing key", [
+            fn() -> test:equal(binary:decode(dbm:get(store3, "name")), "Bob", "updated name")
+        ]);
+        DBM store4 = dbm:remove(store3, "age");
+        test:suite("remove", [
+            fn() -> test:falsy(dbm:has(store4, "age"), "removed key gone"),
+            fn() -> test:truthy(dbm:has(store4, "name"), "other key remains")
+        ]);
+        dbm:close(store4);
+        DBM reopened = dbm:open(path);
+        boolean has = dbm:has(reopened, "name");
+        string name = binary:decode(dbm:get(reopened, "name"));
+        dbm:close(reopened);
+        file:delete(path);
+        test:suite("close and reopen", [
+            fn() -> test:truthy(has, "has after reopen"),
+            fn() -> test:equal(name, "Bob", "get after reopen")
+        ])
+    }
+]);
+
+test:done();

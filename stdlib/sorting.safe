@@ -1,0 +1,144 @@
+module sorting;
+
+type Comparator = fn(?T, ?T) -> boolean;
+
+public boolean ascending(?T a, ?T b) { return a < b; }
+public boolean descending(?T a, ?T b) { return a > b; }
+
+public list<?T> selection(list<?T> items, fn(?T, ?T) -> boolean compare) {
+    int length = len(items);
+    list<?T> result = items;
+    for i in range(length) {
+        int lowest = i;
+        for j in range(length - i - 1) {
+            int k = j + i + 1;
+            lowest = if (compare(result[k], result[lowest])) then k else lowest;
+        }
+        ?T temp = result[i];
+        result[i] = result[lowest];
+        result[lowest] = temp;
+    }
+    return result;
+}
+
+public list<?T> insertion(list<?T> items, fn(?T, ?T) -> boolean compare) {
+    int length = len(items);
+    list<?T> result = items;
+    for i in range(length) {
+        int j = i;
+        for k in range(i) {
+            ?T temp = result[j];
+            ?T previous = if (j > 0) then result[j - 1] else temp;
+            boolean swap = if (j > 0) then compare(temp, previous) else false;
+            result[j] = if (swap) then previous else result[j];
+            result[if (j > 0) then j - 1 else 0] = if (swap) then temp else result[if (j > 0) then j - 1 else 0];
+            j = if (swap) then j - 1 else j;
+        }
+    }
+    return result;
+}
+
+public list<?T> quicksort(list<?T> items, fn(?T, ?T) -> boolean compare) {
+    return quick(items, compare);
+}
+
+private list<?T> quick(list<?T> items, fn(?T, ?T) -> boolean compare)
+decreases(len(items)) {
+    return if (len(items) < 2) then items else partition(items, compare);
+}
+
+private list<?T> partition(list<?T> items, fn(?T, ?T) -> boolean compare)
+decreases(len(items)) {
+    ?T pivot = items[0];
+    list<?T> less = [];
+    list<?T> equal = [pivot];
+    list<?T> greater = [];
+    for i in range(len(items) - 1) {
+        ?T element = items[i + 1];
+        boolean before = compare(element, pivot);
+        boolean after = compare(pivot, element);
+        less = if (before) then append(less, element) else less;
+        equal = if (!before && !after) then append(equal, element) else equal;
+        greater = if (after) then append(greater, element) else greater;
+    }
+    list<?T> result = quick(less, compare);
+    for item in equal {
+        result = append(result, item);
+    }
+    for item in quick(greater, compare) {
+        result = append(result, item);
+    }
+    return result;
+}
+
+public list<?T> mergesort(list<?T> items, fn(?T, ?T) -> boolean compare) {
+    return merge(items, compare);
+}
+
+private list<?T> merge(list<?T> items, fn(?T, ?T) -> boolean compare)
+decreases(len(items)) {
+    int half = len(items) / 2;
+    return if (len(items) < 2) then items
+        else combine(merge(slice(items, 0, half), compare), merge(slice(items, half, len(items)), compare), compare);
+}
+
+private list<?T> combine(list<?T> a, list<?T> b, fn(?T, ?T) -> boolean compare) {
+    list<?T> result = [];
+    int i = 0;
+    int j = 0;
+    for k in range(len(a) + len(b)) {
+        boolean left = if (i >= len(a)) then false
+                       else if (j >= len(b)) then true
+                       else if (compare(b[j], a[i])) then false
+                       else true;
+        result = if (left) then append(result, a[i]) else append(result, b[j]);
+        i = if (left) then i + 1 else i;
+        j = if (left) then j else j + 1;
+    }
+    return result;
+}
+
+public list<?T> timsort(list<?T> items, fn(?T, ?T) -> boolean compare) {
+    int length = len(items);
+    return if (length < 2) then items else tim(items, compare);
+}
+
+private list<?T> tim(list<?T> items, fn(?T, ?T) -> boolean compare) {
+    int length = len(items);
+    int minrun = if (length < 64) then length else 32;
+    list<?T> result = items;
+
+    for i in range((length + minrun - 1) / minrun) {
+        int start = i * minrun;
+        int end = if (start + minrun > length) then length else start + minrun;
+        list<?T> run = insertion(slice(result, start, end), compare);
+        for j in range(len(run)) {
+            result[start + j] = run[j];
+        }
+    }
+
+    int size = minrun;
+    while (size < length) bound (length) {
+        for i in range((length + 2 * size - 1) / (2 * size)) {
+            int start = i * 2 * size;
+            int mid = if (start + size > length) then length else start + size;
+            int end = if (start + 2 * size > length) then length else start + 2 * size;
+            list<?T> merged = combine(slice(result, start, mid), slice(result, mid, end), compare);
+            for j in range(len(merged)) {
+                result[start + j] = merged[j];
+            }
+        }
+        size = size * 2;
+    }
+
+    return result;
+}
+
+public boolean sorted(list<?T> items, fn(?T, ?T) -> boolean compare) {
+    int length = len(items);
+    boolean result = true;
+    for i in range(length - 1) {
+        result = if (compare(items[i + 1], items[i])) then false else result;
+    }
+    return result;
+}

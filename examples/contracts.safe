@@ -1,0 +1,27 @@
+program contracts;
+import io;
+
+// Feature 2: requires/ensures contracts and assertions
+
+int abs(int x)
+    requires x > -100
+{
+    int result = if (x >= 0) then x else 0 - x;
+    return result;
+}
+
+int clamp(int x, int lo, int hi)
+    requires lo <= hi
+{
+    int result = if (x < lo) then lo else if (x > hi) then hi else x;
+    return result;
+}
+
+io:println(abs(5));
+io:println(abs(-3));
+io:println(clamp(15, 0, 10));
+io:println(clamp(-5, 0, 10));
+
+assert 1 + 1 == 2;
+assert true;
+io:println("All contracts and assertions passed!");

@@ -1,0 +1,76 @@
+program test_path;
+import std;
+import path;
+import test;
+
+int x = 0;
+
+test:suite("join", [
+    fn() -> test:equal(path:join("a", "b"), "a/b", "simple join"),
+    fn() -> test:equal(path:join("a/", "b"), "a/b", "trailing slash"),
+    fn() -> test:equal(path:join("a", "/b"), "a/b", "leading slash"),
+    fn() -> test:equal(path:join("a/", "/b"), "a/b", "both slashes"),
+    fn() -> test:equal(path:join("", "b"), "b", "empty left"),
+    fn() -> test:equal(path:join("a", ""), "a", "empty right"),
+    fn() -> test:equal(path:join("/usr", "local/bin"), "/usr/local/bin", "absolute join")
+]);
+
+test:suite("parent", [
+    fn() -> test:equal(path:parent("/a/b/c"), "/a/b", "deep parent"),
+    fn() -> test:equal(path:parent("/a/b"), "/a", "one level"),
+    fn() -> test:equal(path:parent("/a"), "/", "root child"),
+    fn() -> test:equal(path:parent("a/b"), "a", "relative parent"),
+    fn() -> test:equal(path:parent("a"), ".", "single name"),
+    fn() -> test:equal(path:parent("/"), "/", "root parent")
+]);
+
+test:suite("name", [
+    fn() -> test:equal(path:name("/a/b/file.txt"), "file.txt", "full path"),
+    fn() -> test:equal(path:name("file.txt"), "file.txt", "bare name"),
+    fn() -> test:equal(path:name("/a/b/"), "b", "trailing slash"),
+    fn() -> test:equal(path:name("/"), "", "root")
+]);
+
+test:suite("stem", [
+    fn() -> test:equal(path:stem("/a/b/file.txt"), "file", "with extension"),
+    fn() -> test:equal(path:stem("file"), "file", "no extension"),
+    fn() -> test:equal(path:stem("archive.tar.gz"), "archive.tar", "double extension"),
+    fn() -> test:equal(path:stem(".hidden"), ".hidden", "dot file")
+]);
+
+test:suite("extension", [
+    fn() -> test:equal(path:extension("/a/b/file.txt"), ".txt", "simple ext"),
+    fn() -> test:equal(path:extension("file"), "", "no ext"),
+    fn() -> test:equal(path:extension("archive.tar.gz"), ".gz", "last ext"),
+    fn() -> test:equal(path:extension(".hidden"), "", "dot file no ext")
+]);
+
+test:suite("absolute", [
+    fn() -> test:truthy(path:absolute("/a/b"), "absolute path"),
+    fn() -> test:falsy(path:absolute("a/b"), "relative path"),
+    fn() -> test:truthy(path:absolute("/"), "root"),
+    fn() -> test:falsy(path:absolute(""), "empty")
+]);
+
+test:suite("normalize", [
+    fn() -> test:equal(path:normalize("/a//b///c"), "/a/b/c", "collapse slashes"),
+    fn() -> test:equal(path:normalize("/a/b/"), "/a/b", "remove trailing"),
+    fn() -> test:equal(path:normalize("/"), "/", "root unchanged"),
+    fn() -> test:equal(path:normalize("a/b"), "a/b", "relative unchanged")
+]);
+
+test:suite("segments", [
+    fn() -> do {
+        const list<string> s = path:segments("/a/b/c");
+        test:equal(std:str(std:len(s)), "3", "segment count");
+        test:equal(s[0], "a", "first segment");
+        test:equal(s[2], "c", "last segment")
+    },
+    fn() -> test:equal(std:str(std:len(path:segments("/"))), "0", "root no segments"),
+    fn() -> do {
+        const list<string> s = path:segments("a/b");
+        test:equal(std:str(std:len(s)), "2", "relative segments")
+    }
+]);
+
+test:done();

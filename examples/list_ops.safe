@@ -1,0 +1,35 @@
+program list_ops;
+import io;
+import std;
+
+int sum(list<int> items) {
+    int total = 0;
+    for x in items {
+        total = total + x;
+    }
+    return total;
+}
+
+int max_val(list<int> items) {
+    int m = 0;
+    boolean first = true;
+    for x in items {
+        m = if (first) then x else if (x > m) then x else m;
+        first = false;
+    }
+    return m;
+}
+
+list<int> nums = [10, 25, 3, 42, 17, 8];
+io:println("Numbers:");
+for n in nums {
+    io:print(n);
+    io:print(" ");
+}
+io:println("");
+io:println("Sum: ");
+io:println(sum(nums));
+io:println("Max: ");
+io:println(max_val(nums));
+io:println("Length: ");
+io:println(std:len(nums));

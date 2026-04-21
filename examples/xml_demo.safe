@@ -1,0 +1,88 @@
+program xml_demo;
+import io;
+import std;
+import xml;
+
+io:println("=== XML Demo ===");
+
+// Parse an XML document
+const string input = "<library><book id=\"1\" lang=\"en\"><title>The Art of SAFE</title><author>Alice</author><year>2024</year></book><book id=\"2\" lang=\"fr\"><title>Le Guide</title><author>Bob</author><year>2023</year></book></library>";
+
+ParseResult result = xml:parse(input);
+
+int dummy = case result of {
+    Ok(doc): do {
+        io:println("Root tag: " + xml:tag(doc));
+        io:println("Books: " + std:str(xml:count(doc)));
+
+        const list<Xml> books = xml:find(doc, "book");
+        for book in books {
+            io:println("");
+            io:println("  Book #" + xml:attr(book, "id") + " (" + xml:attr(book, "lang") + ")");
+            list<Xml> titles = xml:find(book, "title");
+            list<Xml> authors = xml:find(book, "author");
+            list<Xml> years = xml:find(book, "year");
+            io:println("  Title: " + xml:text(titles[0]));
+            io:println("  Author: " + xml:text(authors[0]));
+            io:println("  Year: " + xml:text(years[0]));
+        }
+        0
+    };
+    Err(e): do { io:println("Error: " + e); 0 };
+};
+
+io:println("");
+
+// Build XML programmatically
+io:println("=== Build XML ===");
+Xml catalog = Element("catalog", {}, [
+    Comment(" Product listing "),
+    Element("product", {"sku": "A100"}, [
+        Element("name", {}, [Text("Widget")]),
+        Element("price", {"currency": "USD"}, [Text("9.99")])
+    ]),
+    Element("product", {"sku": "B200"}, [
+        Element("name", {}, [Text("Gadget")]),
+        Element("price", {"currency": "USD"}, [Text("19.99")])
+    ])
+]);
+io:println(xml:format(catalog));
+
+io:println("");
+
+// XML with special features
+io:println("=== Special Features ===");
+const string special = "<?xml version=\"1.0\"?><!-- config file --><config><db host=\"localhost\" port=\"5432\"/><cache><![CDATA[key=value&other=data]]></cache></config>";
+ParseResult r2 = xml:parse(special);
+dummy = case r2 of {
+    Ok(cfg): do {
+        io:println("Tag: " + xml:tag(cfg));
+        const list<Xml> kids = xml:children(cfg);
+        io:println("Children: " + std:str(std:len(kids)));
+        for child in kids {
+            io:println("  " + xml:tag(child) + ": " + xml:text(child));
+        }
+        io:println("DB host: " + xml:attr(kids[0], "host"));
+        io:println("DB port: " + xml:attr(kids[0], "port"));
+        0
+    };
+    Err(e): do { io:println("Error: " + e); 0 };
+};
+
+io:println("");
+
+// Entity references
+io:println("=== Entities ===");
+ParseResult r3 = xml:parse("<note>Tom &amp; Jerry say &lt;hello&gt;</note>");
+dummy = case r3 of {
+    Ok(n): do { io:println("Text: " + xml:text(n)); 0 };
+    Err(e): do { io:println("Error: " + e); 0 };
+};
+
+// Round trip
+io:println("");
+io:println("=== Round Trip ===");
+const string xml1 = xml:format(catalog);
+ParseResult r4 = xml:parse(xml1);
+const string xml2 = case r4 of { Ok(v): xml:format(v); Err(e): "error"; };
+io:println("Match: " + std:str(xml1 == xml2));

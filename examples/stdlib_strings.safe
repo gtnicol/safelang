@@ -1,0 +1,18 @@
+program stdlib_strings;
+import io;
+import std;
+import strings;
+
+io:println("=== Strings Module Demo ===");
+
+io:println("empty(\"\") = " + std:str(strings:empty("")));
+io:println("empty(\"hi\") = " + std:str(strings:empty("hi")));
+io:println("blank(\"   \") = " + std:str(strings:blank("   ")));
+
+io:println("repeat(\"ha\", 3) = " + strings:repeat("ha", 3));
+io:println("reversed(\"hello\") = " + strings:reversed("hello"));
+
+io:println("padleft(\"42\", 5, \"0\") = " + strings:padleft("42", 5, "0"));
+io:println("padright(\"hi\", 6, \".\") = " + strings:padright("hi", 6, "."));
+
+io:println("count(\"banana\", \"an\") = " + std:str(strings:count("banana", "an")));

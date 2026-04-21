@@ -1,0 +1,55 @@
+module page;
+import binary;
+
+const int SIZE = 4096;
+const int HEADER = 16;
+
+public type Page {
+    public int number;
+    public bytes data;
+    public boolean dirty;
+}
+
+// Create empty page
+public Page create(int number) {
+    return Page { number: number, data: binary:alloc(SIZE), dirty: false };
+}
+
+// Load page from binary file handle
+public Page load(int handle, int number) {
+    binary:seek(handle, number * SIZE);
+    return Page { number: number, data: binary:read(handle, SIZE), dirty: false };
+}
+
+// Write page to binary file handle
+public void store(int handle, Page p) {
+    binary:seek(handle, p.number * SIZE);
+    binary:write(handle, p.data);
+}
+
+// Read/write integers within a page
+public int readint(Page p, int offset) {
+    return binary:unpack(p.data, offset, 8);
+}
+
+public Page writeint(Page p, int offset, int value) {
+    return Page { number: p.number,
+                  data: binary:patch(p.data, offset, binary:pack(value, 8)),
+                  dirty: true };
+}
+
+// Read/write variable-length byte data within a page
+public bytes readdata(Page p, int offset, int length) {
+    return binary:slice(p.data, offset, offset + length);
+}
+
+public Page writedata(Page p, int offset, bytes value) {
+    return Page { number: p.number,
+                  data: binary:patch(p.data, offset, value),
+                  dirty: true };
+}
+
+// Page type tags
+const int LEAF = 1;
+const int INTERNAL = 2;
+const int OVERFLOW = 3;

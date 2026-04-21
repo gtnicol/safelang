@@ -1,0 +1,9 @@
+module hash;
+import binary;
+
+public int fnv(bytes b) { return fnv(b); }
+public int crc(bytes b) { return crc(b); }
+public int murmur(bytes b) { return murmur(b); }
+
+// Convenience: hash a string directly
+public int text(string s) { return fnv(binary:encode(s)); }

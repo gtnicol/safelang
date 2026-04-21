@@ -1,0 +1,587 @@
+module btree;
+import binary;
+import page;
+
+const int ORDER = 64;
+const int META = 0;
+const int MAXDEPTH = 32;
+const int DATASIZE = 4072;
+
+public type BTree {
+    public int handle;
+    public int root;
+    public int count;
+    public int pages;
+}
+
+// Create a new B+ tree file
+public BTree create(string path) {
+    int handle = binary:open(path, "w");
+    Page meta = page:create(0);
+    meta = page:writeint(meta, 0, 1);
+    meta = page:writeint(meta, 8, 0);
+    meta = page:writeint(meta, 16, 2);
+    meta = page:writeint(meta, 24, page.LEAF);
+    page:store(handle, meta);
+    Page root = page:create(1);
+    root = page:writeint(root, 0, page.LEAF);
+    root = page:writeint(root, 8, 0);
+    root = page:writeint(root, 16, 0);
+    page:store(handle, root);
+    binary:flush(handle);
+    return BTree { handle: handle, root: 1, count: 0, pages: 2 };
+}
+
+// Open an existing B+ tree file
+public BTree open(string path) {
+    int handle = binary:open(path, "rw");
+    Page meta = page:load(handle, 0);
+    int root = page:readint(meta, 0);
+    int count = page:readint(meta, 8);
+    int pages = page:readint(meta, 16);
+    return BTree { handle: handle, root: root, count: count, pages: pages };
+}
+
+// Close the B+ tree and flush metadata
+public void close(BTree t) {
+    Page meta = page:create(0);
+    meta = page:writeint(meta, 0, t.root);
+    meta = page:writeint(meta, 8, t.count);
+    meta = page:writeint(meta, 16, t.pages);
+    page:store(t.handle, meta);
+    binary:flush(t.handle);
+    binary:close(t.handle);
+}
+
+// Check if key exists
+public boolean has(BTree t, bytes key) {
+    bytes result = lookup(t, t.root, key);
+    return len(result) > 0;
+}
+
+// Get value by key
+public bytes get(BTree t, bytes key) {
+    return lookup(t, t.root, key);
+}
+
+// Iterative search from root to leaf
+bytes lookup(BTree t, int number, bytes key) {
+    int current = number;
+    bytes result = balloc(0);
+    boolean done = false;
+    while (!done) bound (MAXDEPTH) {
+        Page p = page:load(t.handle, current);
+        int kind = page:readint(p, 0);
+        int entries = page:readint(p, 8);
+        done = kind == page.LEAF;
+        result = if (done) then leafsearch(p, entries, key) else result;
+        current = if (!done) then findchild(p, entries, key) else current;
+    }
+    return result;
+}
+
+// Search a leaf page for a key
+bytes leafsearch(Page p, int entries, bytes key) {
+    int offset = page.HEADER + 8;
+    bytes result = balloc(0);
+    boolean done = false;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, offset);
+        bytes stored = page:readdata(p, offset + 8, klen);
+        int vlen = page:readint(p, offset + 8 + klen);
+        bytes value = page:readdata(p, offset + 16 + klen, vlen);
+        boolean match = bcompare(stored, key) == 0 && !done;
+        result = if (match) then value else result;
+        done = if (match) then true else done;
+        offset = offset + 16 + klen + vlen;
+    }
+    return result;
+}
+
+// Find child page for key in internal node
+// Internal: [kind:8][count:8][pad:8] [child0:8] [klen:8][key][child:8] ...
+int findchild(Page p, int entries, bytes key) {
+    int offset = page.HEADER + 8;
+    int child = page:readint(p, offset);
+    offset = offset + 8;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, offset);
+        bytes stored = page:readdata(p, offset + 8, klen);
+        int next = page:readint(p, offset + 8 + klen);
+        child = if (bcompare(key, stored) >= 0) then next else child;
+        offset = offset + 16 + klen;
+    }
+    return child;
+}
+
+// Bytes used in leaf data area
+int used(Page p, int entries) {
+    int offset = page.HEADER + 8;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, offset);
+        int vlen = page:readint(p, offset + 8 + klen);
+        offset = offset + 16 + klen + vlen;
+    }
+    return offset - page.HEADER - 8;
+}
+
+// Bytes used in internal data area
+int iused(Page p, int entries) {
+    int offset = page.HEADER + 8 + 8;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, offset);
+        offset = offset + 16 + klen;
+    }
+    return offset - page.HEADER - 8;
+}
+
+// Store page and flush
+void storenow(int handle, Page p) {
+    page:store(handle, p);
+    binary:flush(handle);
+}
+
+// Write a KV entry at offset
+Page writeentry(Page p, int offset, bytes key, bytes value) {
+    Page result = page:writeint(p, offset, len(key));
+    result = page:writedata(result, offset + 8, key);
+    result = page:writeint(result, offset + 8 + len(key), len(value));
+    result = page:writedata(result, offset + 16 + len(key), value);
+    return result;
+}
+
+// Write separator key + child at offset
+Page writesep(Page p, int offset, bytes key, int child) {
+    Page result = page:writeint(p, offset, len(key));
+    result = page:writedata(result, offset + 8, key);
+    result = page:writeint(result, offset + 8 + len(key), child);
+    return result;
+}
+
+// Find insertion position for key in leaf
+int leafposition(Page p, int entries, bytes key) {
+    int offset = page.HEADER + 8;
+    int position = entries;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, offset);
+        bytes stored = page:readdata(p, offset + 8, klen);
+        position = if (bcompare(key, stored) < 0 && position == entries) then i else position;
+        offset = offset + 16 + klen + page:readint(p, offset + 8 + klen);
+    }
+    return position;
+}
+
+// Insert KV into leaf at sorted position (no split)
+Page leafinsert(Page p, int entries, bytes key, bytes value) {
+    int position = leafposition(p, entries, key);
+    Page result = page:create(p.number);
+    result = page:writeint(result, 0, page.LEAF);
+    result = page:writeint(result, 8, entries + 1);
+    result = page:writeint(result, 16, page:readint(p, 16));
+    int source = page.HEADER + 8;
+    int destination = page.HEADER + 8;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, source);
+        bytes stored = page:readdata(p, source + 8, klen);
+        int vlen = page:readint(p, source + 8 + klen);
+        bytes val = page:readdata(p, source + 16 + klen, vlen);
+        // Insert new entry before this one if at position
+        result = if (i == position) then writeentry(result, destination, key, value) else result;
+        destination = if (i == position) then destination + 16 + len(key) + len(value) else destination;
+        // Copy existing entry
+        result = writeentry(result, destination, stored, val);
+        source = source + 16 + klen + vlen;
+        destination = destination + 16 + klen + vlen;
+    }
+    // Insert at end if position == entries
+    result = if (position == entries) then writeentry(result, destination, key, value) else result;
+    return result;
+}
+
+// Update existing key's value in leaf
+Page leafupdate(Page p, int entries, bytes key, bytes value) {
+    Page result = page:create(p.number);
+    result = page:writeint(result, 0, page.LEAF);
+    result = page:writeint(result, 8, entries);
+    result = page:writeint(result, 16, page:readint(p, 16));
+    int source = page.HEADER + 8;
+    int destination = page.HEADER + 8;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, source);
+        bytes stored = page:readdata(p, source + 8, klen);
+        int vlen = page:readint(p, source + 8 + klen);
+        bytes val = page:readdata(p, source + 16 + klen, vlen);
+        boolean match = bcompare(stored, key) == 0;
+        bytes writeval = if (match) then value else val;
+        result = writeentry(result, destination, stored, writeval);
+        source = source + 16 + klen + vlen;
+        destination = destination + 16 + klen + len(writeval);
+    }
+    return result;
+}
+
+// Split a leaf: returns (left, right, median key)
+(Page, Page, bytes) splitleaf(Page p, int entries, int rightnum) {
+    int half = entries / 2;
+    // Build left with first half
+    Page left = page:create(p.number);
+    left = page:writeint(left, 0, page.LEAF);
+    left = page:writeint(left, 8, half);
+    left = page:writeint(left, 16, rightnum);
+    int source = page.HEADER + 8;
+    int destination = page.HEADER + 8;
+    for i in 0..(half - 1) {
+        int klen = page:readint(p, source);
+        bytes stored = page:readdata(p, source + 8, klen);
+        int vlen = page:readint(p, source + 8 + klen);
+        bytes val = page:readdata(p, source + 16 + klen, vlen);
+        left = writeentry(left, destination, stored, val);
+        source = source + 16 + klen + vlen;
+        destination = destination + 16 + klen + vlen;
+    }
+    // Median is first key of right half
+    int mklen = page:readint(p, source);
+    bytes median = page:readdata(p, source + 8, mklen);
+    // Build right with second half
+    int remaining = entries - half;
+    Page right = page:create(rightnum);
+    right = page:writeint(right, 0, page.LEAF);
+    right = page:writeint(right, 8, remaining);
+    right = page:writeint(right, 16, page:readint(p, 16));
+    destination = page.HEADER + 8;
+    for i in 0..(remaining - 1) {
+        int klen = page:readint(p, source);
+        bytes stored = page:readdata(p, source + 8, klen);
+        int vlen = page:readint(p, source + 8 + klen);
+        bytes val = page:readdata(p, source + 16 + klen, vlen);
+        right = writeentry(right, destination, stored, val);
+        source = source + 16 + klen + vlen;
+        destination = destination + 16 + klen + vlen;
+    }
+    return (left, right, median);
+}
+
+// Find insertion position in internal node
+int internalposition(Page p, int entries, bytes key) {
+    int offset = page.HEADER + 8 + 8;
+    int position = entries;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, offset);
+        bytes stored = page:readdata(p, offset + 8, klen);
+        position = if (bcompare(key, stored) < 0 && position == entries) then i else position;
+        offset = offset + 16 + klen;
+    }
+    return position;
+}
+
+// Insert separator into internal node (no split)
+Page internalinsert(Page p, int entries, bytes key, int child) {
+    int position = internalposition(p, entries, key);
+    Page result = page:create(p.number);
+    result = page:writeint(result, 0, page.INTERNAL);
+    result = page:writeint(result, 8, entries + 1);
+    result = page:writeint(result, 16, 0);
+    result = page:writeint(result, page.HEADER + 8, page:readint(p, page.HEADER + 8));
+    int source = page.HEADER + 8 + 8;
+    int destination = page.HEADER + 8 + 8;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, source);
+        bytes stored = page:readdata(p, source + 8, klen);
+        int next = page:readint(p, source + 8 + klen);
+        // Insert new separator before this one if at position
+        result = if (i == position) then writesep(result, destination, key, child) else result;
+        destination = if (i == position) then destination + 16 + len(key) else destination;
+        // Copy existing separator
+        result = writesep(result, destination, stored, next);
+        source = source + 16 + klen;
+        destination = destination + 16 + klen;
+    }
+    // Insert at end if position == entries
+    result = if (position == entries) then writesep(result, destination, key, child) else result;
+    return result;
+}
+
+// Split internal node: returns (left, right, median)
+(Page, Page, bytes) splitinternal(Page p, int entries, int rightnum) {
+    int half = entries / 2;
+    // Build left
+    Page left = page:create(p.number);
+    left = page:writeint(left, 0, page.INTERNAL);
+    left = page:writeint(left, 8, half);
+    left = page:writeint(left, 16, 0);
+    left = page:writeint(left, page.HEADER + 8, page:readint(p, page.HEADER + 8));
+    int source = page.HEADER + 8 + 8;
+    int destination = page.HEADER + 8 + 8;
+    for i in 0..(half - 1) {
+        int klen = page:readint(p, source);
+        bytes stored = page:readdata(p, source + 8, klen);
+        int child = page:readint(p, source + 8 + klen);
+        left = writesep(left, destination, stored, child);
+        source = source + 16 + klen;
+        destination = destination + 16 + klen;
+    }
+    // Median promoted up
+    int mklen = page:readint(p, source);
+    bytes median = page:readdata(p, source + 8, mklen);
+    int medchild = page:readint(p, source + 8 + mklen);
+    source = source + 16 + mklen;
+    // Build right
+    int remaining = entries - half - 1;
+    Page right = page:create(rightnum);
+    right = page:writeint(right, 0, page.INTERNAL);
+    right = page:writeint(right, 8, remaining);
+    right = page:writeint(right, 16, 0);
+    right = page:writeint(right, page.HEADER + 8, medchild);
+    destination = page.HEADER + 8 + 8;
+    for i in 0..(remaining - 1) {
+        int klen = page:readint(p, source);
+        bytes stored = page:readdata(p, source + 8, klen);
+        int child = page:readint(p, source + 8 + klen);
+        right = writesep(right, destination, stored, child);
+        source = source + 16 + klen;
+        destination = destination + 16 + klen;
+    }
+    return (left, right, median);
+}
+
+// Build path from root to leaf
+list<int> navigate(BTree t, bytes key) {
+    list<int> path = [t.root];
+    int current = t.root;
+    boolean done = false;
+    while (!done) bound (MAXDEPTH) {
+        Page p = page:load(t.handle, current);
+        int kind = page:readint(p, 0);
+        int entries = page:readint(p, 8);
+        done = kind == page.LEAF;
+        current = if (!done) then findchild(p, entries, key) else current;
+        path = if (!done) then append(path, current) else path;
+    }
+    return path;
+}
+
+// Check if leaf can fit entry
+boolean leaffit(int entries, int current, bytes key, bytes value) {
+    return current + 16 + len(key) + len(value) <= DATASIZE;
+}
+
+// Check if internal can fit separator
+boolean internalfit(int entries, int current, bytes key) {
+    return current + 16 + len(key) <= DATASIZE;
+}
+
+// Put a key-value pair with page splitting.
+// The mutual cycle put → putupdated → putupdatedreinsert → put strictly
+// decreases t.count on each loop because putupdatedreinsert removes the
+// existing entry before retrying. The runtime decreases check enforces this.
+public BTree put(BTree t, bytes key, bytes value)
+decreases(t.count) {
+    list<int> path = navigate(t, key);
+    int depth = len(path);
+    int leafnum = path[depth - 1];
+    Page leaf = page:load(t.handle, leafnum);
+    int entries = page:readint(leaf, 8);
+    boolean existing = len(leafsearch(leaf, entries, key)) > 0;
+    // Check if entry fits before inserting
+    int dataused = used(leaf, entries);
+    int needed = if (existing) then 0 else 16 + len(key) + len(value);
+    boolean fits = dataused + needed <= DATASIZE;
+    return if (existing) then putupdated(t, leaf, entries, key, value)
+        else if (fits) then putinsert(t, leaf, entries, key, value)
+        else putsplitfirst(t, path, leaf, entries, key, value);
+}
+
+// Update existing key — check if new value fits, else remove+reinsert via split path
+BTree putupdated(BTree t, Page leaf, int entries, bytes key, bytes value)
+decreases(t.count) {
+    // Calculate size after replacing old value with new value
+    int dataused = used(leaf, entries);
+    int oldvlen = leafoldvlen(leaf, entries, key);
+    int newused = dataused - oldvlen + len(value);
+    return if (newused <= DATASIZE) then putupdatedinplace(t, leaf, entries, key, value)
+        else putupdatedreinsert(t, leaf, entries, key, value);
+}
+
+// In-place update when new value fits
+BTree putupdatedinplace(BTree t, Page leaf, int entries, bytes key, bytes value) {
+    Page updated = leafupdate(leaf, entries, key, value);
+    storenow(t.handle, updated);
+    return BTree { handle: t.handle, root: t.root, count: t.count, pages: t.pages };
+}
+
+// Remove old entry, then insert via normal path (may trigger split)
+BTree putupdatedreinsert(BTree t, Page leaf, int entries, bytes key, bytes value)
+decreases(t.count) {
+    Page updated = leafremove(leaf, entries, key);
+    storenow(t.handle, updated);
+    BTree t2 = BTree { handle: t.handle, root: t.root, count: t.count - 1, pages: t.pages };
+    return put(t2, key, value);
+}
+
+// Get old value length for a key in a leaf
+int leafoldvlen(Page p, int entries, bytes key) {
+    int offset = page.HEADER + 8;
+    int result = 0;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, offset);
+        bytes stored = page:readdata(p, offset + 8, klen);
+        int vlen = page:readint(p, offset + 8 + klen);
+        result = if (bcompare(stored, key) == 0) then vlen else result;
+        offset = offset + 16 + klen + vlen;
+    }
+    return result;
+}
+
+// Remove a key from a leaf page (rebuild without it)
+Page leafremove(Page p, int entries, bytes key) {
+    Page result = page:create(p.number);
+    result = page:writeint(result, 0, page.LEAF);
+    result = page:writeint(result, 16, page:readint(p, 16));
+    int source = page.HEADER + 8;
+    int destination = page.HEADER + 8;
+    int kept = 0;
+    for i in 0..(entries - 1) {
+        int klen = page:readint(p, source);
+        bytes stored = page:readdata(p, source + 8, klen);
+        int vlen = page:readint(p, source + 8 + klen);
+        boolean skip = bcompare(stored, key) == 0;
+        bytes val = page:readdata(p, source + 16 + klen, vlen);
+        result = if (!skip) then writeentry(result, destination, stored, val) else result;
+        destination = if (!skip) then destination + 16 + klen + vlen else destination;
+        kept = if (!skip) then kept + 1 else kept;
+        source = source + 16 + klen + vlen;
+    }
+    result = page:writeint(result, 8, kept);
+    return result;
+}
+
+// Insert into leaf that has room
+BTree putinsert(BTree t, Page leaf, int entries, bytes key, bytes value) {
+    Page updated = leafinsert(leaf, entries, key, value);
+    storenow(t.handle, updated);
+    return BTree { handle: t.handle, root: t.root, count: t.count + 1, pages: t.pages };
+}
+
+// Split leaf first, then insert into correct half
+BTree putsplitfirst(BTree t, list<int> path, Page leaf, int entries, bytes key, bytes value) {
+    int depth = len(path);
+    int rightnum = t.pages;
+    (Page, Page, bytes) parts = splitleaf(leaf, entries, rightnum);
+    const (leftpage, rightpage, median) = parts;
+    // Insert into left or right based on key vs median
+    boolean goleft = bcompare(key, median) < 0;
+    int leftentries = page:readint(leftpage, 8);
+    int rightentries = page:readint(rightpage, 8);
+    Page finalleft = if (goleft) then leafinsert(leftpage, leftentries, key, value) else leftpage;
+    Page finalright = if (!goleft) then leafinsert(rightpage, rightentries, key, value) else rightpage;
+    storenow(t.handle, finalleft);
+    storenow(t.handle, finalright);
+    int pagecount = t.pages + 1;
+    int newcount = t.count + 1;
+    // Propagate split upward
+    return propagate(t, path, depth, median, rightnum, pagecount, newcount);
+}
+
+// Propagate a split upward through internal nodes
+BTree propagate(BTree t, list<int> path, int depth, bytes median, int rightnum, int pagecount, int newcount) {
+    bytes splitkey = median;
+    int splitchild = rightnum;
+    boolean splitting = true;
+    int level = depth - 2;
+    int rootpage = t.root;
+    int pages = pagecount;
+    while (splitting && level >= 0) bound (MAXDEPTH) {
+        int parentnum = path[level];
+        Page parent = page:load(t.handle, parentnum);
+        int pentries = page:readint(parent, 8);
+        int pused = iused(parent, pentries);
+        boolean fits = internalfit(pentries, pused, splitkey);
+        // If fits, insert and stop
+        parent = if (fits) then internalinsert(parent, pentries, splitkey, splitchild) else parent;
+        splitting = if (fits) then false else splitting;
+        // If doesn't fit, split internal — need to insert into a temp bigger buffer first
+        // We split the existing page and insert into the correct half
+        splitkey = if (!fits) then splitinternalup(t.handle, parent, pentries, splitkey, splitchild, pages) else splitkey;
+        splitchild = if (!fits) then pages else splitchild;
+        pages = if (!fits) then pages + 1 else pages;
+        storenow(t.handle, if (fits) then parent else page:load(t.handle, parentnum));
+        level = level - 1;
+    }
+    rootpage = if (splitting) then makenewroot(t.handle, path[0], splitkey, splitchild, pages) else rootpage;
+    pages = if (splitting) then pages + 1 else pages;
+    return BTree { handle: t.handle, root: rootpage, count: newcount, pages: pages };
+}
+
+// Split an internal node and insert separator into correct half
+// Returns the promoted median key. Stores both halves to disk.
+bytes splitinternalup(int handle, Page p, int entries, bytes key, int child, int pagecount) {
+    int rightnum = pagecount;
+    // Split existing page (without the new separator)
+    (Page, Page, bytes) parts = splitinternal(p, entries, rightnum);
+    const (left, right, median) = parts;
+    // Insert new separator into left or right half
+    boolean goleft = bcompare(key, median) < 0;
+    int leftentries = page:readint(left, 8);
+    int rightentries = page:readint(right, 8);
+    Page finalleft = if (goleft) then internalinsert(left, leftentries, key, child) else left;
+    Page finalright = if (!goleft) then internalinsert(right, rightentries, key, child) else right;
+    storenow(handle, finalleft);
+    storenow(handle, finalright);
+    return median;
+}
+
+// Create new root page, return its page number
+int makenewroot(int handle, int leftchild, bytes median, int rightchild, int pagecount) {
+    int rootnum = pagecount;
+    Page root = page:create(rootnum);
+    root = page:writeint(root, 0, page.INTERNAL);
+    root = page:writeint(root, 8, 1);
+    root = page:writeint(root, 16, 0);
+    root = page:writeint(root, page.HEADER + 8, leftchild);
+    root = writesep(root, page.HEADER + 8 + 8, median, rightchild);
+    storenow(handle, root);
+    return rootnum;
+}
+
+// Remove a key from the tree
+public BTree remove(BTree t, bytes key) {
+    list<int> path = navigate(t, key);
+    int leafnum = path[len(path) - 1];
+    Page leaf = page:load(t.handle, leafnum);
+    int entries = page:readint(leaf, 8);
+    boolean found = len(leafsearch(leaf, entries, key)) > 0;
+    return if (found) then removeentry(t, leaf, entries, key) else t;
+}
+
+BTree removeentry(BTree t, Page leaf, int entries, bytes key) {
+    Page updated = leafremove(leaf, entries, key);
+    storenow(t.handle, updated);
+    return BTree { handle: t.handle, root: t.root, count: t.count - 1, pages: t.pages };
+}
+
+// Scan a range of keys (follows leaf chain)
+public list<(bytes, bytes)> scan(BTree t, bytes start, bytes end, int limit) {
+    list<(bytes, bytes)> results = [];
+    list<int> path = navigate(t, start);
+    int leafnum = path[len(path) - 1];
+    int found = 0;
+    boolean done = false;
+    while (!done && leafnum > 0) bound (1000) {
+        Page p = page:load(t.handle, leafnum);
+        int entries = page:readint(p, 8);
+        int offset = page.HEADER + 8;
+        for i in 0..(entries - 1) {
+            int klen = page:readint(p, offset);
+            bytes stored = page:readdata(p, offset + 8, klen);
+            int vlen = page:readint(p, offset + 8 + klen);
+            bytes value = page:readdata(p, offset + 16 + klen, vlen);
+            boolean inrange = bcompare(stored, start) >= 0 && bcompare(stored, end) < 0 && found < limit;
+            results = if (inrange) then append(results, (stored, value)) else results;
+            found = if (inrange) then found + 1 else found;
+            done = if (bcompare(stored, end) >= 0 || found >= limit) then true else done;
+            offset = offset + 16 + klen + vlen;
+        }
+        leafnum = if (!done) then page:readint(p, 16) else 0;
+    }
+    return results;
+}

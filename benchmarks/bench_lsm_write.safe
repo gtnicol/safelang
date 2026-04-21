@@ -1,0 +1,24 @@
+program bench_lsm_write;
+import io;
+import std;
+import lsm;
+import binary;
+import file;
+
+const int N = 10000;
+const string DIR = "/tmp/_safe_bench_lsm_w";
+
+int t0 = std:time();
+LSM db = lsm:create(DIR);
+
+for i in 0..(N-1) {
+    string k = "k" + std:str(i);
+    bytes v = binary:encode("v" + std:str(i));
+    db = lsm:put(db, k, v);
+}
+
+int t1 = std:time();
+
+io:println("=== lsm (write only) ===");
+io:println("records: " + std:str(N));
+io:println("write: " + std:str(t1 - t0) + "ms");

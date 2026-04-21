@@ -1,0 +1,16 @@
+program const_demo;
+import io;
+
+// Feature 3: const qualifier
+
+int compute(const int factor) {
+    return factor * 2;
+}
+
+const int MAX_SIZE = 100;
+const string GREETING = "Hello from SAFE";
+
+io:println(GREETING);
+io:println(MAX_SIZE);
+io:println(compute(21));
+io:println("Const works!");

@@ -1,0 +1,48 @@
+program test_functional;
+import std;
+import functional;
+import test;
+
+int x = 0;
+
+test:suite("map", [
+    fn() -> do {
+        list<int> doubled = functional:map([1, 2, 3], fn(x) -> x * 2);
+        test:equal(std:str(doubled[0]), "2", "map first");
+        test:equal(std:str(doubled[2]), "6", "map last")
+    }
+]);
+
+test:suite("filter", [
+    fn() -> do {
+        list<int> evens = functional:filter([1, 2, 3, 4, 5], fn(x) -> x % 2 == 0);
+        test:equal(std:str(std:len(evens)), "2", "filter count");
+        test:equal(std:str(evens[0]), "2", "filter first");
+        test:equal(std:str(evens[1]), "4", "filter second")
+    }
+]);
+
+test:suite("fold", [
+    fn() -> do {
+        int total = functional:fold([1, 2, 3, 4], 0, fn(a, b) -> a + b);
+        test:equal(std:str(total), "10", "fold sum")
+    }
+]);
+
+test:suite("flatmap", [
+    fn() -> do {
+        list<int> flat = functional:flatmap([1, 2, 3], fn(x) -> [x, x * 10]);
+        test:equal(std:str(std:len(flat)), "6", "flatmap count");
+        test:equal(std:str(flat[0]), "1", "flatmap first");
+        test:equal(std:str(flat[1]), "10", "flatmap second")
+    }
+]);
+
+test:suite("converge", [
+    fn() -> do {
+        int result = functional:converge(100, fn(x) -> x / 2, 20);
+        test:equal(std:str(result), "0", "converge to zero")
+    }
+]);
+
+test:done();

@@ -1,0 +1,109 @@
+module collections;
+
+public list<?T> append(list<?T> items, ?T item) {
+    return append(items, item);
+}
+
+public list<?T> remove(list<?T> items, int index) {
+    return remove(items, index);
+}
+
+public list<?T> slice(list<?T> items, int start, int end) {
+    return slice(items, start, end);
+}
+
+public list<?T> reverse(list<?T> items) {
+    return reverse(items);
+}
+
+public list<?T> sort(list<?T> items) {
+    return sort(items);
+}
+
+public boolean contains(map<?K, ?V> m, ?K key) {
+    return contains(m, key);
+}
+
+public list<?K> keys(map<?K, ?V> m) {
+    return keys(m);
+}
+
+public list<?V> values(map<?K, ?V> m) {
+    return values(m);
+}
+
+public int size(list<?T> items) {
+    return size(items);
+}
+
+public set<?T> add(set<?T> items, ?T item) {
+    return add(items, item);
+}
+
+public set<?T> union(set<?T> a, set<?T> b) {
+    return union(a, b);
+}
+
+public set<?T> intersect(set<?T> a, set<?T> b) {
+    return intersect(a, b);
+}
+
+public set<?T> difference(set<?T> a, set<?T> b) {
+    return difference(a, b);
+}
+
+public boolean any(list<?T> items, ?T target) {
+    boolean result = false;
+    for x in items {
+        result = if (x == target) then true else result;
+    }
+    return result;
+}
+
+public boolean all(list<?T> items, ?T target) {
+    boolean result = true;
+    for x in items {
+        result = if (x != target) then false else result;
+    }
+    return result;
+}
+
+public int count(list<?T> items, ?T target) {
+    int total = 0;
+    for x in items {
+        total = if (x == target) then total + 1 else total;
+    }
+    return total;
+}
+
+public list<?T> unique(list<?T> items) {
+    list<?T> result = [];
+    for x in items {
+        boolean found = false;
+        for y in result {
+            found = if (x == y) then true else found;
+        }
+        result = if (found) then result else append(result, x);
+    }
+    return result;
+}
+
+public ?T minimum(list<?T> items)
+    requires size(items) > 0
+{
+    ?T result = items[0];
+    for x in items {
+        result = if (x < result) then x else result;
+    }
+    return result;
+}
+
+public ?T maximum(list<?T> items)
+    requires size(items) > 0
+{
+    ?T result = items[0];
+    for x in items {
+        result = if (x > result) then x else result;
+    }
+    return result;
+}

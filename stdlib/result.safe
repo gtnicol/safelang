@@ -1,0 +1,24 @@
+module result;
+
+public enum Result { Ok(?T), Err(string) }
+
+public ?T unwrap(Result r, ?T fallback) {
+    return case r of {
+        Ok(v): v;
+        Err(m): fallback;
+    };
+}
+
+public boolean failed(Result r) {
+    return case r of {
+        Ok(v): false;
+        Err(m): true;
+    };
+}
+
+public string message(Result r) {
+    return case r of {
+        Ok(v): "";
+        Err(m): m;
+    };
+}

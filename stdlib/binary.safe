@@ -1,0 +1,31 @@
+module binary;
+
+// bytes creation
+public bytes alloc(int size) { return balloc(size); }
+public bytes encode(string s) { return bencode(s); }
+public bytes pack(int value, int width) { return bpack(value, width); }
+
+// bytes operations
+public int get(bytes b, int index) { return bget(b, index); }
+public bytes put(bytes b, int index, int value) { return bset(b, index, value); }
+public bytes slice(bytes b, int start, int end) { return bslice(b, start, end); }
+public bytes concat(bytes a, bytes b) { return bconcat(a, b); }
+public string decode(bytes b) { return bdecode(b); }
+public int unpack(bytes b, int offset, int width) { return bunpack(b, offset, width); }
+public bytes patch(bytes b, int offset, bytes data) { return bpatch(b, offset, data); }
+public int compare(bytes a, bytes b) { return bcompare(a, b); }
+public string hex(bytes b) { return bhex(b); }
+
+// bytes utilities
+public int length(bytes b) { return len(b); }
+public string tostr(bytes b) { return str(b); }
+public string kind(bytes b) { return typeof(b); }
+
+// binary file I/O
+public int open(string path, string mode) { return bopen(path, mode); }
+public void close(int handle) { bclose(handle); }
+public bytes read(int handle, int count) { return bread(handle, count); }
+public int write(int handle, bytes data) { return bwrite(handle, data); }
+public void seek(int handle, int offset) { bseek(handle, offset); }
+public int size(string path) { return bsize(path); }
+public void flush(int handle) { bflush(handle); }

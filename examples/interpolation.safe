@@ -1,0 +1,12 @@
+program interpolation;
+import io;
+
+// Feature 7: string interpolation
+
+string name = "World";
+int count = 42;
+
+io:println(`Hello, ${name}!`);
+io:println(`The answer is ${count}`);
+io:println(`Sum: ${10 + 20}`);
+io:println("Interpolation works!");

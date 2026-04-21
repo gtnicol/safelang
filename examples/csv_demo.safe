@@ -1,0 +1,63 @@
+program csv_demo;
+import io;
+import std;
+import csv;
+
+io:println("=== CSV Demo ===");
+
+// Parse CSV data
+const string data = "name,age,city\nAlice,30,Portland\nBob,25,Seattle\nCharlie,35,Denver";
+const list<list<string>> rows = csv:parse(data);
+
+io:println("Rows: " + std:str(std:len(rows)));
+io:println("Header: " + csv:line(rows[0]));
+io:println("");
+
+// Access individual fields
+io:println("=== Row Access ===");
+int i = 1;
+while (i < std:len(rows)) bound (std:len(rows)) {
+    io:println("  " + rows[i][0] + " is " + rows[i][1] + " from " + rows[i][2]);
+    i = i + 1;
+}
+
+io:println("");
+
+// Parse as records (maps with header keys)
+io:println("=== Records ===");
+const list<map<string, string>> records = csv:records(data);
+io:println("Records: " + std:str(std:len(records)));
+for record in records {
+    io:println("  " + record["name"] + " (age " + record["age"] + ")");
+}
+
+io:println("");
+
+// Handle quoted fields
+io:println("=== Quoted Fields ===");
+const string quoted = "product,description,price\nWidget,\"Small, portable device\",9.99\nGadget,\"Has \"\"special\"\" features\",19.99";
+const list<map<string, string>> products = csv:records(quoted);
+for product in products {
+    io:println("  " + product["product"] + ": " + product["description"] + " ($" + product["price"] + ")");
+}
+
+io:println("");
+
+// Build CSV programmatically
+io:println("=== Build CSV ===");
+list<list<string>> output = [
+    ["id", "name", "score"],
+    ["1", "Alice", "95"],
+    ["2", "Bob", "87"],
+    ["3", "Charlie", "92"]
+];
+io:println(csv:format(output));
+
+io:println("");
+
+// Round trip
+io:println("=== Round Trip ===");
+const string formatted = csv:format(output);
+const list<list<string>> reparsed = csv:parse(formatted);
+const string again = csv:format(reparsed);
+io:println("Match: " + std:str(formatted == again));

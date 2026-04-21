@@ -1,0 +1,132 @@
+; ── SAFE Bytecode Assembly Example ────────────────────────────────────
+;
+; A hand-written assembler program that computes the sum of 1 to N
+; using a loop, demonstrates if-else branching, and calls builtins.
+;
+; Equivalent SAFE source:
+;
+;   program assembler;
+;   import io;
+;   import std;
+;
+;   int sum(int n) {
+;       int total = 0;
+;       for i in std:range(n) {
+;           total = total + (i + 1);
+;       }
+;       return total;
+;   }
+;
+;   string label(int n) {
+;       return if (n > 50) then "big" else "small";
+;   }
+;
+;   int result = sum(10);
+;   io:println(result);
+;   io:println(label(result));
+;
+; Run with:
+;   safe assemble examples/assembler.safea
+;   safe vm examples/assembler.safeb
+;
+; Expected output:
+;   55
+;   big
+
+.version 1
+
+; ── Constant Pool ────────────────────────────────────────────────────
+; Every value used by instructions lives here, referenced by @index.
+
+.constants
+  @0 int 0                    ; zero (loop init, comparisons)
+  @1 int 1                    ; one (increment)
+  @2 int 10                   ; N = 10
+  @3 int 50                   ; threshold for label()
+  @4 string "big"             ; then-branch string
+  @5 string "small"           ; else-branch string
+  @6 name "result"            ; global variable name
+  @7 name "range"             ; builtin function
+  @8 name "println"           ; builtin function
+  @9 name "sum"               ; user function
+  @10 name "label"            ; user function
+
+; ── Global Variables ─────────────────────────────────────────────────
+
+.globals
+  var result
+
+; ── Functions ────────────────────────────────────────────────────────
+
+; int sum(int n)
+;   slot 0 = n (parameter)
+;   slot 1 = total
+;   slot 2 = iterator state
+;   slot 3 = i (loop variable)
+
+.function sum params=1 locals=4
+  const_int @0                ; push 0
+  store_local 1               ; total = 0
+
+  load_local 0                ; push n
+  call 7 1                    ; range(n) → [0, 1, ..., n-1]
+  iter_init 2                 ; store iterator at slot 2
+
+L_LOOP:
+  iter_next 3 L_DONE          ; i = next element, or jump to L_DONE
+
+  load_local 1                ; push total
+  load_local 3                ; push i
+  const_int @1                ; push 1
+  add                         ; i + 1 (range is 0-based, we want 1-based)
+  add                         ; total + (i + 1)
+  store_local 1               ; total = total + (i + 1)
+
+  jump L_LOOP                 ; next iteration
+
+L_DONE:
+  load_local 1                ; push total
+  return
+.end
+
+; string label(int n)
+;   slot 0 = n (parameter)
+;   returns "big" if n > 50, else "small"
+
+.function label params=1 locals=1
+  load_local 0                ; push n
+  const_int @3                ; push 50
+  cmp_gt                      ; n > 50?
+  jump_false L_ELSE           ; if false, jump to else branch
+
+  const_str @4                ; push "big"
+  jump L_END
+
+L_ELSE:
+  const_str @5                ; push "small"
+
+L_END:
+  return
+.end
+
+; ── Main Program ─────────────────────────────────────────────────────
+
+.main locals=0
+  ; int result = sum(10);
+  const_int @2                ; push 10
+  call 9 1                    ; sum(10) → 55
+  store_global @6             ; result = 55
+
+  ; io:println(result);
+  load_global @6              ; push result
+  call 8 1                    ; println(55)
+  pop                         ; discard void return
+
+  ; io:println(label(result));
+  load_global @6              ; push result
+  call 10 1                   ; label(55) → "big"
+  call 8 1                    ; println("big")
+  pop                         ; discard void return
+
+  halt
+.end

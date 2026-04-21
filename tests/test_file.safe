@@ -1,0 +1,49 @@
+program test_file;
+import std;
+import file;
+import test;
+
+int x = 0;
+
+test:suite("file", [
+    fn() -> do {
+        string stamp = std:str(std:time());
+        string path = `/tmp/safe_test_${stamp}.txt`;
+        file:write(path, "hello safe");
+        ReadResult r = file:read(path);
+        test:suite("write and read", [
+            fn() -> test:equal(case r of { Ok(v): v; _: "error"; }, "hello safe", "read content")
+        ]);
+        test:suite("exists", [
+            fn() -> test:truthy(file:exists(path), "exists after write")
+        ]);
+        file:delete(path);
+        test:suite("delete", [
+            fn() -> test:falsy(file:exists(path), "not exists after delete")
+        ]);
+        string path2 = `/tmp/safe_test_handle_${stamp}.txt`;
+        OpenResult opened = file:open(path2, "w");
+        File f = case opened of { Ok(handle): handle; _: File { id: 0 - 1, path: "" }; };
+        file:save(f, "line one\nline two");
+        file:close(f);
+        OpenResult opened2 = file:open(path2, "r");
+        File f2 = case opened2 of { Ok(handle): handle; _: File { id: 0 - 1, path: "" }; };
+        LinesResult lr = file:lines(f2);
+        list<string> content = case lr of { Ok(items): items; _: []; };
+        test:suite("handle based io", [
+            fn() -> test:equal(std:str(std:len(content)), "2", "lines count"),
+            fn() -> test:equal(content[0], "line one", "first line")
+        ]);
+        file:close(f2);
+        file:delete(path2);
+        string dir = `/tmp/safe_test_dir_${stamp}`;
+        test:suite("mkdir and isdir", [
+            fn() -> test:truthy(file:mkdir(dir), "mkdir success"),
+            fn() -> test:truthy(file:isdir(dir), "isdir true"),
+            fn() -> test:truthy(file:rmdir(dir), "rmdir success"),
+            fn() -> test:falsy(file:isdir(dir), "isdir after rmdir")
+        ])
+    }
+]);
+
+test:done();

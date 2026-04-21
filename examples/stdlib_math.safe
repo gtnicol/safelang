@@ -1,0 +1,28 @@
+program stdlib_math;
+import io;
+import std;
+import math;
+
+io:println("=== Math Module Demo ===");
+
+io:println("Factorial(5) = " + std:str(math:factorial(5)));
+io:println("Factorial(10) = " + std:str(math:factorial(10)));
+
+io:println("GCD(48, 18) = " + std:str(math:gcd(48, 18)));
+io:println("LCM(4, 6) = " + std:str(math:lcm(4, 6)));
+
+io:println("Prime(7) = " + std:str(math:prime(7)));
+io:println("Prime(9) = " + std:str(math:prime(9)));
+
+io:println("Fibonacci(10) = " + std:str(math:fib(10)));
+
+io:println("Clamp(15, 0, 10) = " + std:str(math:clamp(15, 0, 10)));
+io:println("Sign(-5) = " + std:str(math:sign(0 - 5)));
+io:println("Sign(0) = " + std:str(math:sign(0)));
+io:println("Sign(3) = " + std:str(math:sign(3)));
+
+list<int> nums = [10, 20, 30, 40, 50];
+io:println("Sum([10..50]) = " + std:str(math:sum(nums)));
+
+io:println("PI = " + std:str(math.PI));
+io:println("E = " + std:str(math.E));

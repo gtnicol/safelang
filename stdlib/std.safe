@@ -1,0 +1,41 @@
+module std;
+
+public string str(int x) {
+    return str(x);
+}
+
+public int len(string s) {
+    return len(s);
+}
+
+public list<int> range(int end) {
+    return range(end);
+}
+
+public list<int> span(int start, int end) {
+    return range(start, end);
+}
+
+public string typeof(int x) {
+    return typeof(x);
+}
+
+public int time() {
+    return time();
+}
+
+public list<string> args() {
+    return args();
+}
+
+public void exit(int code) {
+    exit(code);
+}
+
+public int integer(string s) {
+    return integer(s);
+}
+
+public float decimal(string s) {
+    return decimal(s);
+}

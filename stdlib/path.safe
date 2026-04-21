@@ -1,0 +1,83 @@
+module path;
+
+public string join(string a, string b) {
+    return if (a == "") then b
+    else if (b == "") then a
+    else if (ends(a, "/") && starts(b, "/")) then a + substring(b, 1, len(b))
+    else if (ends(a, "/") || starts(b, "/")) then a + b
+    else a + "/" + b;
+}
+
+public string parent(string p) {
+    const string cleaned = normalize(p);
+    const int last = lastslash(cleaned);
+    return if (last > 0) then substring(cleaned, 0, last)
+    else if (starts(cleaned, "/")) then "/"
+    else ".";
+}
+
+public string name(string p) {
+    const string cleaned = normalize(p);
+    const int last = lastslash(cleaned);
+    return if (last < 0) then cleaned
+    else substring(cleaned, last + 1, len(cleaned));
+}
+
+public string stem(string p) {
+    const string n = name(p);
+    const int dot = lastdot(n);
+    return if (dot <= 0) then n
+    else substring(n, 0, dot);
+}
+
+public string extension(string p) {
+    const string n = name(p);
+    const int dot = lastdot(n);
+    return if (dot <= 0) then ""
+    else substring(n, dot, len(n));
+}
+
+public boolean absolute(string p) {
+    return starts(p, "/");
+}
+
+public string normalize(string p) {
+    string result = replace(p, "//", "/");
+    // Collapse repeated //
+    while (indexOf(result, "//") >= 0) bound (len(p)) {
+        result = replace(result, "//", "/");
+    }
+    // Remove trailing / unless root
+    result = if (len(result) > 1 && ends(result, "/")) then substring(result, 0, len(result) - 1) else result;
+    return result;
+}
+
+public list<string> segments(string p) {
+    const string cleaned = normalize(p);
+    const list<string> parts = split(cleaned, "/");
+    list<string> result = [];
+    for part in parts {
+        result = if (part != "") then append(result, part) else result;
+    }
+    return result;
+}
+
+int lastslash(string s) {
+    int result = -1;
+    int i = 0;
+    while (i < len(s)) bound (len(s)) {
+        result = if (s[i] == "/") then i else result;
+        i = i + 1;
+    }
+    return result;
+}
+
+int lastdot(string s) {
+    int result = -1;
+    int i = 0;
+    while (i < len(s)) bound (len(s)) {
+        result = if (s[i] == ".") then i else result;
+        i = i + 1;
+    }
+    return result;
+}

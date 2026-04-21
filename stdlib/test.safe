@@ -1,0 +1,50 @@
+module test;
+import io;
+import std;
+
+public void suite(string name, list<fn() -> void> tests) {
+    println(`[SUITE] ${name}`);
+    for t in tests {
+        t();
+    }
+}
+
+public void equal(string actual, string expected, string label) {
+    boolean ok = actual == expected;
+    println(if (ok) then `[PASS] ${label}` else `[FAIL] ${label}: expected ${expected}, got ${actual}`);
+    assert ok, `${label}: expected ${expected}, got ${actual}`;
+}
+
+public void truthy(boolean condition, string label) {
+    println(if (condition) then `[PASS] ${label}` else `[FAIL] ${label}: expected true`);
+    assert condition, `${label}: expected true`;
+}
+
+public void falsy(boolean condition, string label) {
+    boolean ok = !condition;
+    println(if (ok) then `[PASS] ${label}` else `[FAIL] ${label}: expected false`);
+    assert ok, `${label}: expected false`;
+}
+
+public void near(float actual, float expected, float tolerance, string label) {
+    float diff = if (actual - expected >= 0.0) then actual - expected else expected - actual;
+    boolean ok = diff <= tolerance;
+    println(if (ok) then `[PASS] ${label}` else `[FAIL] ${label}: expected ~${str(expected)}, got ${str(actual)}`);
+    assert ok, `${label}: expected ~${str(expected)}, got ${str(actual)}`;
+}
+
+public void greater(int actual, int limit, string label) {
+    boolean ok = actual > limit;
+    println(if (ok) then `[PASS] ${label}` else `[FAIL] ${label}: expected > ${str(limit)}, got ${str(actual)}`);
+    assert ok, `${label}: expected > ${str(limit)}, got ${str(actual)}`;
+}
+
+public void less(int actual, int limit, string label) {
+    boolean ok = actual < limit;
+    println(if (ok) then `[PASS] ${label}` else `[FAIL] ${label}: expected < ${str(limit)}, got ${str(actual)}`);
+    assert ok, `${label}: expected < ${str(limit)}, got ${str(actual)}`;
+}
+
+public void done() {
+    println("[DONE]");
+}

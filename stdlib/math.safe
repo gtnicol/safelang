@@ -1,0 +1,153 @@
+module math;
+
+public float sqrt(float x) {
+    return sqrt(x);
+}
+
+public float pow(float x, float y) {
+    return pow(x, y);
+}
+
+public int|float abs(int|float x) {
+    return abs(x);
+}
+
+public int|float min(int|float a, int|float b) {
+    return min(a, b);
+}
+
+public int|float max(int|float a, int|float b) {
+    return max(a, b);
+}
+
+public int floor(float x) {
+    return floor(x);
+}
+
+public int ceil(float x) {
+    return ceil(x);
+}
+
+public int round(float x) {
+    return round(x);
+}
+
+public float log(float x) {
+    return log(x);
+}
+
+public float sin(float x) {
+    return sin(x);
+}
+
+public float cos(float x) {
+    return cos(x);
+}
+
+public float tan(float x) {
+    return tan(x);
+}
+
+public float asin(float x) {
+    return asin(x);
+}
+
+public float acos(float x) {
+    return acos(x);
+}
+
+public float atan(float x) {
+    return atan(x);
+}
+
+public float atan2(float y, float x) {
+    return atan2(y, x);
+}
+
+public float exp(float x) {
+    return exp(x);
+}
+
+public float log10(float x) {
+    return log10(x);
+}
+
+public float rand() {
+    return rand();
+}
+
+public int randint(int low, int high) {
+    return randint(low, high);
+}
+
+public void seed(int n) {
+    seed(n);
+}
+
+public int factorial(int n) {
+    int safe = if (n < 0) then 0 else n;
+    int result = 1;
+    for i in range(safe) {
+        result = result * (i + 1);
+    }
+    return result;
+}
+
+public int gcd(int a, int b) {
+    int x = abs(a);
+    int y = abs(b);
+    for i in range(100) {
+        int temp = y;
+        y = if (y == 0) then 0 else x - (x / y) * y;
+        x = if (temp == 0) then x else temp;
+    }
+    return x;
+}
+
+public int lcm(int a, int b) {
+    int d = gcd(a, b);
+    return if (d == 0) then 0 else (a / d) * b;
+}
+
+public boolean prime(int n) {
+    boolean result = if (n < 2) then false else true;
+    for i in range(n - 2) {
+        int d = i + 2;
+        result = if (d * d > n) then result
+                 else if (n - (n / d) * d == 0) then false
+                 else result;
+    }
+    return result;
+}
+
+public int fib(int n) {
+    int a = 0;
+    int b = 1;
+    int result = 0;
+    for i in range(n) {
+        result = a;
+        int temp = a + b;
+        a = b;
+        b = temp;
+    }
+    return result;
+}
+
+public int|float clamp(int|float v, int|float lo, int|float hi) {
+    return if (v < lo) then lo else if (v > hi) then hi else v;
+}
+
+public int sign(int|float n) {
+    return if (n > 0) then 1 else if (n < 0) then 0 - 1 else 0;
+}
+
+public int|float sum(list<int|float> items) {
+    int|float total = 0;
+    for x in items {
+        total = total + x;
+    }
+    return total;
+}
+
+const float PI = 3.14159265358979;
+const float E = 2.71828182845905;

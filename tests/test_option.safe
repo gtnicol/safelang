@@ -1,0 +1,19 @@
+program test_option;
+import std;
+import option;
+import test;
+
+Option a = Some(42);
+Option b = None;
+
+test:suite("Some and None", [
+    fn() -> test:truthy(option:present(a), "Some is present"),
+    fn() -> test:falsy(option:present(b), "None not present")
+]);
+
+test:suite("unwrap", [
+    fn() -> test:equal(std:str(option:unwrap(a, 0)), "42", "unwrap Some"),
+    fn() -> test:equal(std:str(option:unwrap(b, 99)), "99", "unwrap None default")
+]);
+
+test:done();

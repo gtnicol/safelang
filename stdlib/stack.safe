@@ -1,0 +1,29 @@
+module stack;
+
+public type Stack {
+    list<?T> items;
+}
+
+public Stack create() {
+    return Stack { items: [] };
+}
+
+public Stack push(Stack s, ?T v) {
+    return Stack { items: append(s.items, v) };
+}
+
+public Stack pop(Stack s) requires s.items != [] {
+    return Stack { items: slice(s.items, 0, len(s.items) - 1) };
+}
+
+public ?T peek(Stack s) requires s.items != [] {
+    return s.items[len(s.items) - 1];
+}
+
+public boolean blank(Stack s) {
+    return len(s.items) == 0;
+}
+
+public int depth(Stack s) {
+    return len(s.items);
+}

@@ -1,0 +1,24 @@
+program test_result;
+import std;
+import result;
+import test;
+
+Result ok = Ok(42);
+Result err = Err("something wrong");
+
+test:suite("Ok and Err", [
+  fn() -> test:falsy(result:failed(ok), "Ok not failed"),
+  fn() -> test:truthy(result:failed(err), "Err is failed")
+]);
+
+test:suite("unwrap", [
+  fn() -> test:equal(std:str(result:unwrap(ok, 0)), "42", "unwrap Ok"),
+  fn() -> test:equal(std:str(result:unwrap(err, 99)), "99", "unwrap Err default")
+]);
+
+test:suite("message", [
+  fn() -> test:equal(result:message(ok), "", "Ok message empty"),
+  fn() -> test:equal(result:message(err), "something wrong", "Err message")
+]);
+
+test:done();

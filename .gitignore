@@ -1,0 +1,82 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+.kotlin
+dependency-reduced-pom.xml
+
+### IntelliJ IDEA ###
+.idea
+.idea/modules.xml
+.idea/jarRepositories.xml
+.idea/compiler.xml
+.idea/libraries/
+*.iws
+*.iml
+*.ipr
+
+### Eclipse ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### Mac OS ###
+.DS_Store
+
+### NLP model files (resolved at build time) ###
+src/main/resources/models/
+
+### AI Kibble
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.claude
+
+### Generated artifacts (reproducible from .safe sources) ###
+# bytecode / native binaries / WASM / emitted C / runtime shim copies
+examples/*.safeb
+examples/*.wasm
+examples/*.c
+examples/*.h
+benchmarks/*.safeb
+benchmarks/*.wasm
+benchmarks/*.c
+benchmarks/*.h
+tests/*.safeb
+tests/*.wasm
+tests/*.c
+tests/*.h
+tests/*.bak
+tests/*.clean
+stdlib/*.safeb
+
+# Compiled executables (no extension) produced by the native backend
+examples/hello
+examples/enums
+examples/fibonacci
+examples/contracts
+examples/tour
+tests/test_dbm
+tests/test_queue
+benchmarks/bench_btree
+benchmarks/bench_dbm
+benchmarks/bench_lsm
+benchmarks/bench_lsm_write
+

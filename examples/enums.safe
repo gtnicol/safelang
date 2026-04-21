@@ -1,0 +1,27 @@
+program enums;
+import io;
+
+// Feature 5: enums with pattern matching
+
+enum Color { Red, Green, Blue }
+
+enum Shape {
+    Circle(float),
+    Rectangle(float, float),
+    Point
+}
+
+int colorCode(int c) {
+    int result = case c of {
+        0: 255;
+        1: 65280;
+        2: 16711680;
+        default: 0;
+    };
+    return result;
+}
+
+io:println(colorCode(0));
+io:println(colorCode(1));
+io:println(colorCode(2));
+io:println("Enum declaration and case matching work!");

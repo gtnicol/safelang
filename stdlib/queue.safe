@@ -1,0 +1,25 @@
+module queue;
+
+public type Queue {
+    list<?T> items;
+}
+
+public Queue create() {
+    return Queue { items: [] };
+}
+
+public Queue enqueue(Queue q, ?T v) {
+    return Queue { items: append(q.items, v) };
+}
+
+public Queue dequeue(Queue q) requires q.items != [] {
+    return Queue { items: slice(q.items, 1, len(q.items)) };
+}
+
+public ?T front(Queue q) requires q.items != [] {
+    return q.items[0];
+}
+
+public boolean blank(Queue q) {
+    return len(q.items) == 0;
+}

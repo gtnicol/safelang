@@ -1,0 +1,39 @@
+program test_uuid;
+import std;
+import uuid;
+import test;
+
+int x = 0;
+
+test:suite("generate", [
+    fn() -> do {
+        const string id = uuid:generate();
+        test:equal(std:str(std:len(id)), "36", "uuid length 36");
+        test:equal(id[8], "-", "dash at 8");
+        test:equal(id[13], "-", "dash at 13");
+        test:equal(id[18], "-", "dash at 18");
+        test:equal(id[23], "-", "dash at 23");
+        test:equal(id[14], "4", "version 4")
+    },
+    fn() -> do {
+        const string a = uuid:generate();
+        const string b = uuid:generate();
+        test:falsy(a == b, "two uuids differ")
+    }
+]);
+
+test:suite("valid", [
+    fn() -> test:truthy(uuid:valid("550e8400-e29b-41d4-a716-446655440000"), "valid uuid"),
+    fn() -> test:truthy(uuid:valid(uuid:generate()), "generated is valid"),
+    fn() -> test:falsy(uuid:valid("not-a-uuid"), "invalid string"),
+    fn() -> test:falsy(uuid:valid(""), "empty string"),
+    fn() -> test:falsy(uuid:valid("550e8400-e29b-41d4-a716-44665544000"), "too short"),
+    fn() -> test:truthy(uuid:valid(uuid:nil()), "nil uuid valid")
+]);
+
+test:suite("nil", [
+    fn() -> test:equal(uuid:nil(), "00000000-0000-0000-0000-000000000000", "nil value"),
+    fn() -> test:truthy(uuid:valid(uuid:nil()), "nil is valid")
+]);
+
+test:done();

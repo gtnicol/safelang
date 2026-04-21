@@ -1,0 +1,50 @@
+program test_stack;
+import std;
+import stack;
+import test;
+
+int x = 0;
+
+test:suite("stack", [
+    fn() -> do {
+        Stack s = stack:create();
+        test:suite("create and blank", [
+            fn() -> test:truthy(stack:blank(s), "new stack is blank"),
+            fn() -> test:equal(std:str(stack:depth(s)), "0", "new stack depth 0")
+        ]);
+        Stack s1 = stack:push(s, 10);
+        Stack s2 = stack:push(s1, 20);
+        Stack s3 = stack:push(s2, 30);
+        test:suite("push and peek", [
+            fn() -> test:falsy(stack:blank(s3), "pushed stack not blank"),
+            fn() -> test:equal(std:str(stack:depth(s3)), "3", "depth after 3 pushes"),
+            fn() -> test:equal(std:str(stack:peek(s3)), "30", "peek top")
+        ]);
+        Stack s4 = stack:pop(s3);
+        test:suite("pop", [
+            fn() -> test:equal(std:str(stack:depth(s4)), "2", "depth after pop"),
+            fn() -> test:equal(std:str(stack:peek(s4)), "20", "peek after pop")
+        ])
+    }
+]);
+
+test:suite("multiple pops", [
+    fn() -> do {
+        Stack s = stack:push(stack:push(stack:push(stack:create(), 1), 2), 3);
+        Stack s1 = stack:pop(s);
+        Stack s2 = stack:pop(s1);
+        test:equal(std:str(stack:peek(s2)), "1", "peek after two pops");
+        test:equal(std:str(stack:depth(s2)), "1", "depth after two pops")
+    }
+]);
+
+test:suite("string stack", [
+    fn() -> do {
+        Stack s = stack:push(stack:push(stack:create(), "hello"), "world");
+        test:equal(stack:peek(s), "world", "string peek");
+        Stack s2 = stack:pop(s);
+        test:equal(stack:peek(s2), "hello", "string peek after pop")
+    }
+]);
+
+test:done();

@@ -1,0 +1,73 @@
+program json_demo;
+import io;
+import std;
+import json;
+
+io:println("=== JSON Demo ===");
+
+// Parse a JSON object
+const string input = "{\"name\":\"Alice\",\"age\":30,\"scores\":[95,87,92],\"active\":true}";
+ParseResult result = json:parse(input);
+
+int dummy = case result of {
+    Ok(data): do {
+        io:println("Parsed: " + json:format(data));
+        io:println("Name: " + json:format(json:get(data, "name")));
+        io:println("Age: " + json:format(json:get(data, "age")));
+        io:println("Active: " + json:format(json:get(data, "active")));
+        io:println("Scores: " + json:format(json:get(data, "scores")));
+        io:println("First score: " + json:format(json:at(json:get(data, "scores"), 0)));
+        io:println("Fields: " + std:str(std:len(json:fields(data))));
+        io:println("Kind: " + json:kind(data));
+        0
+    };
+    Err(e): do { io:println("Error: " + e); 0 };
+};
+
+io:println("");
+
+// Build JSON programmatically
+io:println("=== Build JSON ===");
+Json person = Object({
+    "name": Str("Bob"),
+    "age": Int(25),
+    "tags": Array([Str("developer"), Str("gamer")]),
+    "address": Object({
+        "city": Str("Portland"),
+        "state": Str("OR")
+    })
+});
+io:println(json:format(person));
+
+io:println("");
+
+// JSONL (JSON Lines) parsing
+io:println("=== JSONL Demo ===");
+const string jsonl = "{\"id\":1,\"item\":\"apple\"}\n{\"id\":2,\"item\":\"banana\"}\n{\"id\":3,\"item\":\"cherry\"}";
+const list<Json> items = json:jsonl(jsonl);
+io:println("Parsed " + std:str(std:len(items)) + " records");
+for item in items {
+    io:println("  " + json:format(json:get(item, "item")));
+}
+
+io:println("");
+
+// Pattern matching on JSON values
+io:println("=== Pattern Matching ===");
+Json value = json:get(person, "age");
+const string desc = case value of {
+    Int(n): "integer: " + std:str(n);
+    Str(s): "string: " + s;
+    Bool(b): "boolean";
+    Null: "null";
+    _: "other";
+};
+io:println("Age is " + desc);
+
+// Round-trip test
+io:println("");
+io:println("=== Round Trip ===");
+const string formatted = json:format(person);
+ParseResult reparsed = json:parse(formatted);
+const string again = case reparsed of { Ok(j): json:format(j); Err(e): "error"; };
+io:println("Match: " + std:str(formatted == again));

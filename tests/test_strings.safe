@@ -1,0 +1,105 @@
+program test_strings;
+import std;
+import strings;
+import test;
+
+int x = 0;
+
+test:suite("substring", [
+    fn() -> test:equal(strings:substring("hello world", 0, 5), "hello", "substring start"),
+    fn() -> test:equal(strings:substring("hello world", 6, 11), "world", "substring end")
+]);
+
+test:suite("indexOf", [
+    fn() -> test:equal(std:str(strings:indexOf("hello", "ell")), "1", "indexOf found"),
+    fn() -> test:equal(std:str(strings:indexOf("hello", "xyz")), "-1", "indexOf not found")
+]);
+
+test:suite("charAt", [
+    fn() -> test:equal(strings:charAt("hello", 0), "h", "charAt 0"),
+    fn() -> test:equal(strings:charAt("hello", 4), "o", "charAt 4")
+]);
+
+test:suite("split", [
+    fn() -> do {
+        list<string> parts = strings:split("a,b,c", ",");
+        test:equal(std:str(std:len(parts)), "3", "split count");
+        test:equal(parts[0], "a", "split first");
+        test:equal(parts[2], "c", "split last")
+    }
+]);
+
+test:suite("trim", [
+    fn() -> test:equal(strings:trim("  hello  "), "hello", "trim spaces"),
+    fn() -> test:equal(strings:trim("hello"), "hello", "trim none")
+]);
+
+test:suite("upper and lower", [
+    fn() -> test:equal(strings:upper("hello"), "HELLO", "upper"),
+    fn() -> test:equal(strings:lower("HELLO"), "hello", "lower")
+]);
+
+test:suite("replace", [
+    fn() -> test:equal(strings:replace("hello world", "world", "safe"), "hello safe", "replace word")
+]);
+
+test:suite("starts and ends", [
+    fn() -> test:truthy(strings:starts("hello", "hel"), "starts true"),
+    fn() -> test:falsy(strings:starts("hello", "xyz"), "starts false"),
+    fn() -> test:truthy(strings:ends("hello", "llo"), "ends true"),
+    fn() -> test:falsy(strings:ends("hello", "xyz"), "ends false")
+]);
+
+test:suite("join", [
+    fn() -> test:equal(strings:join(["a", "b", "c"], "-"), "a-b-c", "join with dash"),
+    fn() -> test:equal(strings:join(["single"], ","), "single", "join single")
+]);
+
+test:suite("chars", [
+    fn() -> do {
+        list<string> letters = strings:chars("abc");
+        test:equal(std:str(std:len(letters)), "3", "chars count");
+        test:equal(letters[0], "a", "chars first")
+    }
+]);
+
+test:suite("empty and blank", [
+    fn() -> test:truthy(strings:empty(""), "empty true"),
+    fn() -> test:falsy(strings:empty("x"), "empty false"),
+    fn() -> test:truthy(strings:blank("   "), "blank spaces"),
+    fn() -> test:falsy(strings:blank("x"), "blank false")
+]);
+
+test:suite("repeat", [
+    fn() -> test:equal(strings:repeat("ab", 3), "ababab", "repeat 3"),
+    fn() -> test:equal(strings:repeat("x", 0), "", "repeat 0")
+]);
+
+test:suite("reversed", [
+    fn() -> test:equal(strings:reversed("hello"), "olleh", "reversed"),
+    fn() -> test:equal(strings:reversed("a"), "a", "reversed single")
+]);
+
+test:suite("padleft and padright", [
+    fn() -> test:equal(strings:padleft("hi", 5, " "), "   hi", "padleft"),
+    fn() -> test:equal(strings:padright("hi", 5, " "), "hi   ", "padright")
+]);
+
+test:suite("count", [
+    fn() -> test:equal(std:str(strings:count("banana", "an")), "2", "count substrings")
+]);
+
+test:suite("matches and findall", [
+    fn() -> do {
+        list<string> found = strings:findall("abc123def456", "\\d+");
+        test:truthy(strings:matches("hello123", ".*\\d+"), "matches regex");
+        test:equal(std:str(std:len(found)), "2", "findall count");
+        test:equal(found[0], "123", "findall first")
+    }
+]);
+
+test:suite("replaceall", [
+    fn() -> test:equal(strings:replaceall("a1b2c3", "\\d", "X"), "aXbXcX", "replaceall regex")
+]);
+
+test:done();

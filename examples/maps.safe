@@ -1,0 +1,17 @@
+program maps;
+import io;
+import std;
+
+// Feature 1: map types with literals
+
+map<string, int> ages = {"alice": 30, "bob": 25, "charlie": 35};
+
+io:println(ages["alice"]);
+io:println(ages["bob"]);
+
+// Map modification
+ages["dave"] = 28;
+io:println(ages["dave"]);
+
+io:println(std:len(ages));
+io:println("Maps work!");

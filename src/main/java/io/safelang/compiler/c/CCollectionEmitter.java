@@ -174,31 +174,30 @@ final class CCollectionEmitter {
           context.indentDec();
           context.indent(builder);
           builder.append("}\n");
-        } else if (context.isPointerType(type)) {
-          // Pointer types: append directly without boxing
-          builder.append("safe_list_append(__list__, ").append(code).append(");\n");
-        } else if (type != null && context.enumerations().containsKey(type)) {
-          builder.append("{\n");
-          context.indentInc();
-          context.indent(builder);
-          builder
-              .append(type)
-              .append("* __val__ = (")
-              .append(type)
-              .append("*)safe_alloc(sizeof(")
-              .append(type)
-              .append("), SAFE_KIND_ENUM, 0);\n");
-          context.indent(builder);
-          builder.append("*__val__ = ").append(code).append(";\n");
-          context.indent(builder);
-          builder.append("safe_list_append(__list__, __val__);\n");
-          context.indentDec();
-          context.indent(builder);
-          builder.append("}\n");
         } else if (context.isFunctionType(type) || elem instanceof LambdaNode) {
           // Closures are always boxed (SAFEClosure*) since bug 006 — the
           // pointer goes straight into the list.
           builder.append("safe_list_append(__list__, (void*)").append(code).append(");\n");
+        } else if (type != null && context.enumerations().containsKey(type)) {
+          // Recursive enums are already pointers (Type*) — store directly. Non-recursive enums
+          // are value structs — heap-copy into a Type* so the element fits the void* slot and
+          // reads back as (*(Type*)slot).
+          if (context.isRecursive(type)) {
+            builder.append("safe_list_append(__list__, ").append(code).append(");\n");
+          } else {
+            box(builder, type, "SAFE_KIND_ENUM", code);
+          }
+        } else if (type != null && context.isStruct(type)) {
+          // Struct values are heap-copied into a Type* (read back as (*(Type*)slot)).
+          box(builder, context.translate(type), "SAFE_KIND_OBJECT", code);
+        } else if (type != null && (type.startsWith("tuple<") || "tuple".equals(type))) {
+          // Tuple values (SAFETuple) are heap-copied into a SAFETuple* (read back as
+          // (*(SAFETuple*)slot)). isPointerType claims tuples are pointers, but their C value is
+          // a struct, so they must be boxed rather than appended directly.
+          box(builder, "SAFETuple", "SAFE_KIND_TUPLE", code);
+        } else if (context.isPointerType(type)) {
+          // Genuine pointer types (list/map/set/bytes): append directly without boxing.
+          builder.append("safe_list_append(__list__, ").append(code).append(");\n");
         } else {
           builder.append("{\n");
           context.indentInc();
@@ -365,6 +364,34 @@ final class CCollectionEmitter {
     builder.append("})");
 
     return builder.toString();
+  }
+
+  /**
+   * Box a value-typed list element (struct, non-recursive enum, or tuple) by heap-allocating a copy
+   * and appending the pointer, so it fits the list's {@code void*} slot and reads back as {@code
+   * *(ctype*)slot}.
+   */
+  private void box(
+      final StringBuilder builder, final String ctype, final String kind, final String code) {
+    builder.append("{\n");
+    context.indentInc();
+    context.indent(builder);
+    builder
+        .append(ctype)
+        .append("* __val__ = (")
+        .append(ctype)
+        .append("*)safe_alloc(sizeof(")
+        .append(ctype)
+        .append("), ")
+        .append(kind)
+        .append(", 0);\n");
+    context.indent(builder);
+    builder.append("*__val__ = ").append(code).append(";\n");
+    context.indent(builder);
+    builder.append("safe_list_append(__list__, __val__);\n");
+    context.indentDec();
+    context.indent(builder);
+    builder.append("}\n");
   }
 
   /** Set element-tag value used by the runtime to dispatch insertion. */

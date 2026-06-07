@@ -80,6 +80,15 @@ final class CIndexCompiler {
         }
         return "(*((" + element + "*)((void**)" + container + "->data)[" + index + "]))";
       }
+      if (context.isStruct(element)) {
+        return "(*(("
+            + context.translate(element)
+            + "*)((void**)"
+            + container
+            + "->data)["
+            + index
+            + "]))";
+      }
     }
     return "*((int64_t*)((void**)" + container + "->data)[" + index + "])";
   }
@@ -206,6 +215,22 @@ final class CIndexCompiler {
     }
     if ("boolean".equals(element)) {
       return "*((int*)((void**)" + container + "->data)[" + index + "]) = " + value + ";";
+    }
+    // Tuples and structs are value types boxed as a heap pointer — overwrite the pointee in place
+    // (checked before isPointerType, which wrongly classifies tuples as raw pointers).
+    if (element != null && element.startsWith("tuple<")) {
+      return "*((SAFETuple*)((void**)" + container + "->data)[" + index + "]) = " + value + ";";
+    }
+    if (context.isStruct(element)) {
+      return "*(("
+          + context.translate(element)
+          + "*)((void**)"
+          + container
+          + "->data)["
+          + index
+          + "]) = "
+          + value
+          + ";";
     }
     if (context.isPointerType(element)) {
       return "((void**)" + container + "->data)[" + index + "] = (void*)" + value + ";";

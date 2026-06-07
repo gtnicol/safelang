@@ -452,8 +452,7 @@ class XmlTests {
 
   @Test
   void loadXmlFile() throws Exception {
-    Files.writeString(
-        Path.of("/tmp/test_junit.xml"), "<root><child>data</child></root>");
+    Files.writeString(Path.of("/tmp/test_junit.xml"), "<root><child>data</child></root>");
     final var result =
         run(
             PREAMBLE

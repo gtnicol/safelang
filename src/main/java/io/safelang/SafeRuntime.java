@@ -5,6 +5,7 @@ import io.safelang.bytecode.BytecodeVM;
 import io.safelang.compiler.BytecodeCompilerService;
 import io.safelang.compiler.CompileRequest;
 import io.safelang.compiler.CompilerFrontEnd;
+import io.safelang.compiler.JvmCompilerService;
 import io.safelang.compiler.SafeCompileResult;
 import io.safelang.compiler.SafeCompiler;
 import io.safelang.compiler.WebAssemblyCompilerService;
@@ -145,6 +146,20 @@ public final class SafeRuntime {
       final boolean strict,
       final List<Path> modulePath) {
     return invoke(new WebAssemblyCompilerService(), source, filename, strict, modulePath);
+  }
+
+  /** Compile a SAFE source to a self-contained executable JVM jar. */
+  public static SafeCompileResult jvm(
+      final String source, final String filename, final boolean strict) {
+    return jvm(source, filename, strict, List.of());
+  }
+
+  public static SafeCompileResult jvm(
+      final String source,
+      final String filename,
+      final boolean strict,
+      final List<Path> modulePath) {
+    return invoke(new JvmCompilerService(), source, filename, strict, modulePath);
   }
 
   /**

@@ -18,17 +18,28 @@ public class TestRunner {
   private final boolean native_;
   private final boolean bytecode;
   private final boolean wasm;
+  private final boolean jvm;
 
   TestRunner(final boolean strict, final boolean native_, final boolean bytecode) {
-    this(strict, native_, bytecode, false);
+    this(strict, native_, bytecode, false, false);
   }
 
   TestRunner(
       final boolean strict, final boolean native_, final boolean bytecode, final boolean wasm) {
+    this(strict, native_, bytecode, wasm, false);
+  }
+
+  TestRunner(
+      final boolean strict,
+      final boolean native_,
+      final boolean bytecode,
+      final boolean wasm,
+      final boolean jvm) {
     this.strict = strict;
     this.native_ = native_;
     this.bytecode = bytecode;
     this.wasm = wasm;
+    this.jvm = jvm;
   }
 
   int execute(final String target) {
@@ -71,6 +82,9 @@ public class TestRunner {
     if (wasm) {
       return runWasm(file);
     }
+    if (jvm) {
+      return runJvm(file);
+    }
     if (native_) {
       return runNative(file);
     }
@@ -78,6 +92,48 @@ public class TestRunner {
       return runBytecode(file);
     }
     return runInterpreted(file);
+  }
+
+  private Result runJvm(final Path file) {
+    final var name = file.getFileName().toString();
+    final var capture = new StringWriter();
+    try {
+      final var source = Files.readString(file);
+      final var parsed = CompilerFrontEnd.parse(source, file.toString(), strict);
+      SafeRuntime.emit(parsed.warnings());
+      final var bytes =
+          io.safelang.compiler.jvm.JvmBackend.classBytes(
+              parsed.program(), parsed.registry(), "io/safelang/generated/Test");
+      io.safelang.compiler.jvm.JvmRuntime.setOutput(capture);
+      try {
+        final var loaded = new ClassBytes().define("io.safelang.generated.Test", bytes);
+        loaded.getMethod("main", String[].class).invoke(null, (Object) new String[0]);
+      } finally {
+        io.safelang.compiler.jvm.JvmRuntime.clearOutput();
+      }
+      return parse(name, capture.toString());
+    } catch (Throwable throwable) {
+      final var cause =
+          throwable instanceof java.lang.reflect.InvocationTargetException invocation
+                  && invocation.getCause() != null
+              ? invocation.getCause()
+              : throwable;
+      final var result = parse(name, capture.toString());
+      if (result.failed() == 0) {
+        final var message =
+            cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
+        final var failures = new ArrayList<>(result.failures());
+        failures.add(message);
+        return new Result(name, result.passed(), 1, failures, null);
+      }
+      return result;
+    }
+  }
+
+  private static final class ClassBytes extends ClassLoader {
+    Class<?> define(final String binaryName, final byte[] bytes) {
+      return defineClass(binaryName, bytes, 0, bytes.length);
+    }
   }
 
   private Result runInterpreted(final Path file) {

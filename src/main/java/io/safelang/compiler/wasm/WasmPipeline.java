@@ -46,10 +46,7 @@ public final class WasmPipeline {
    * @param options run configuration (directory mounts, env, argv, stdin)
    */
   public static List<String> command(
-      final Path directory,
-      final Path main,
-      final CompileResult result,
-      final RunOptions options) {
+      final Path directory, final Path main, final CompileResult result, final RunOptions options) {
     final var args = new ArrayList<String>();
     args.add("wasmtime");
     args.add("run");

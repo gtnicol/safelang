@@ -43,6 +43,10 @@ public class CCodeGenerator implements ASTVisitor<String> {
   private final Set<String> recursive;
   private final io.safelang.compiler.refcount.RefcountPolicy rc;
   private final Deque<Frame> frames = new ArrayDeque<>();
+  // Recursive value→string helpers generated on demand (one per compound type).
+  private final Map<String, String> stringifiers = new HashMap<>();
+  private final List<String> stringifierDecls = new ArrayList<>();
+  private final List<String> stringifierDefs = new ArrayList<>();
   private StringBuilder output;
   private int indent;
   private ModuleRegistry registry;
@@ -510,13 +514,23 @@ public class CCodeGenerator implements ASTVisitor<String> {
       line("}");
     }
 
-    // Splice lambda and wrapper definitions at the marker
+    // Splice lambda, wrapper, and stringifier definitions at the marker. Stringifier forward
+    // declarations come first so the generated helpers may reference one another (and recurse).
     final var defs = new StringBuilder();
+    for (final var decl : stringifierDecls) {
+      defs.append(decl).append("\n");
+    }
+    if (!stringifierDecls.isEmpty()) {
+      defs.append("\n");
+    }
     for (final var wrapper : wrappers) {
       defs.append(wrapper).append("\n\n");
     }
     for (final var lambda : definitions) {
       defs.append(lambda).append("\n\n");
+    }
+    for (final var stringifier : stringifierDefs) {
+      defs.append(stringifier).append("\n\n");
     }
     final var result = output.toString();
     return result.replace(marker + "\n", defs.toString());
@@ -1873,6 +1887,283 @@ public class CCodeGenerator implements ASTVisitor<String> {
     return "safe_map_get_";
   }
 
+  // ---- Recursive value stringification (matches the interpreter's SAFEValue.asString) ----
+
+  /** True for compound types that need a generated recursive stringifier. */
+  private boolean stringifiable(final String type) {
+    if (type == null) return false;
+    return type.startsWith("list<")
+        || type.startsWith("tuple<")
+        || "tuple".equals(type)
+        || type.startsWith("map<")
+        || enumerations.containsKey(type)
+        || structs.containsKey(type);
+  }
+
+  /**
+   * A C expression of type {@code char*} rendering {@code expr} (whose SAFE type is {@code type})
+   * exactly as the interpreter's {@code SAFEValue.asString}. Compound types delegate to a recursive
+   * helper function generated once and spliced into the output.
+   */
+  private String stringify(final String expr, final String type) {
+    if (type == null) return "safe_string_val(" + expr + ")";
+    switch (type) {
+      case "int":
+        return "safe_string_val(" + expr + ")";
+      case "uint":
+        return "safe_string_val_uint(" + expr + ")";
+      case "float":
+        return "safe_string_val_float(" + expr + ")";
+      case "boolean":
+        return "safe_string_val_bool(" + expr + ")";
+      case "string":
+        return expr;
+      case "void":
+        return "\"void\"";
+      default:
+        break;
+    }
+    if (type.startsWith("list<")) return ensureListStr(type) + "(" + expr + ")";
+    if (type.startsWith("tuple<") || "tuple".equals(type))
+      return ensureTupleStr(type) + "(" + expr + ")";
+    if (type.startsWith("map<")) return ensureMapStr(type) + "(" + expr + ")";
+    if (enumerations.containsKey(type)) return ensureEnumStr(type) + "(" + expr + ")";
+    if (structs.containsKey(type)) return ensureStructStr(type) + "(" + expr + ")";
+    return "safe_string_val(" + expr + ")";
+  }
+
+  /** Sanitize a SAFE type string into a valid C identifier suffix. */
+  private String typeId(final String type) {
+    final var builder = new StringBuilder();
+    for (int i = 0; i < type.length(); i++) {
+      final var c = type.charAt(i);
+      builder.append(Character.isLetterOrDigit(c) ? c : '_');
+    }
+    return builder.toString();
+  }
+
+  /**
+   * C expression reading element {@code index} of {@code container} (a SAFEList*) as type {@code
+   * t}.
+   */
+  private String readElement(final String container, final String index, final String t) {
+    final var slot = "((void**)" + container + "->data)[" + index + "]";
+    if ("string".equals(t)) return "(char*)" + slot;
+    if ("float".equals(t)) return "*((double*)" + slot + ")";
+    if ("uint".equals(t)) return "*((uint64_t*)" + slot + ")";
+    if ("int".equals(t) || "boolean".equals(t)) return "*((int64_t*)" + slot + ")";
+    if (t.startsWith("list<") || t.startsWith("map<") || t.startsWith("set<")) {
+      return "(" + translate(t) + ")" + slot;
+    }
+    if (t.startsWith("tuple<") || "tuple".equals(t)) return "(*((SAFETuple*)" + slot + "))";
+    if (enumerations.containsKey(t)) {
+      return recursive.contains(t) ? "((" + t + "*)" + slot + ")" : "(*((" + t + "*)" + slot + "))";
+    }
+    if (structs.containsKey(t)) return "(*((" + t + "*)" + slot + "))";
+    return "*((int64_t*)" + slot + ")";
+  }
+
+  private String ensureListStr(final String type) {
+    final var existing = stringifiers.get(type);
+    if (existing != null) return existing;
+    final var name = "safe_str__" + typeId(type);
+    stringifiers.put(type, name);
+    stringifierDecls.add("static char* " + name + "(SAFEList* xs);");
+    final var elem = inner(type);
+    final var body = new StringBuilder();
+    body.append("static char* ").append(name).append("(SAFEList* xs) {\n");
+    body.append("  if (!xs || xs->length == 0) return safe_arena_strdup(\"[]\");\n");
+    body.append("  int64_t __n = xs->length;\n");
+    body.append("  const char** __p = (const char**)malloc((size_t)__n * sizeof(char*));\n");
+    body.append("  for (int64_t __i = 0; __i < __n; __i++) {\n");
+    body.append("    ")
+        .append(translate(elem))
+        .append(" __e = ")
+        .append(readElement("xs", "__i", elem))
+        .append(";\n");
+    body.append("    __p[__i] = ").append(stringify("__e", elem)).append(";\n");
+    body.append("  }\n");
+    body.append("  char* __r = safe_join(__p, (int)__n, \"[\", \", \", \"]\");\n");
+    body.append("  free(__p);\n");
+    body.append("  return __r;\n");
+    body.append("}");
+    stringifierDefs.add(body.toString());
+    return name;
+  }
+
+  private String ensureTupleStr(final String type) {
+    final var existing = stringifiers.get(type);
+    if (existing != null) return existing;
+    final var name = "safe_str__" + typeId(type);
+    stringifiers.put(type, name);
+    stringifierDecls.add("static char* " + name + "(SAFETuple t);");
+    final var elements =
+        type.startsWith("tuple<")
+            ? split(type.substring(6, type.length() - 1))
+            : new ArrayList<String>();
+    final var body = new StringBuilder();
+    body.append("static char* ").append(name).append("(SAFETuple t) {\n");
+    body.append("  const char* __p[").append(Math.max(elements.size(), 1)).append("];\n");
+    for (int i = 0; i < elements.size(); i++) {
+      final var etype = elements.get(i).trim();
+      body.append("  __p[")
+          .append(i)
+          .append("] = ")
+          .append(stringify(unwrap("t.elements[" + i + "]", etype), etype))
+          .append(";\n");
+    }
+    body.append("  return safe_join(__p, ")
+        .append(elements.size())
+        .append(", \"(\", \", \", \")\");\n");
+    body.append("}");
+    stringifierDefs.add(body.toString());
+    return name;
+  }
+
+  private String ensureMapStr(final String type) {
+    final var existing = stringifiers.get(type);
+    if (existing != null) return existing;
+    final var name = "safe_str__" + typeId(type);
+    stringifiers.put(type, name);
+    stringifierDecls.add("static char* " + name + "(SAFEMap* m);");
+    final var keyType = keyed(type);
+    final var valueType = valued(type);
+    final var body = new StringBuilder();
+    body.append("static char* ").append(name).append("(SAFEMap* m) {\n");
+    body.append("  if (!m || m->length == 0) return safe_arena_strdup(\"{}\");\n");
+    body.append("  int64_t __n = m->length;\n");
+    body.append("  const char** __p = (const char**)malloc((size_t)__n * sizeof(char*));\n");
+    body.append("  int64_t __i = 0;\n");
+    body.append("  for (SAFEMapEntry* __e = m->head; __e; __e = __e->order_next) {\n");
+    body.append("    const char* __kv[3];\n");
+    body.append("    __kv[0] = ").append(stringify(mapKey(keyType), keyType)).append(";\n");
+    body.append("    __kv[1] = \": \";\n");
+    body.append("    __kv[2] = ").append(stringify(mapValue(valueType), valueType)).append(";\n");
+    body.append("    __p[__i++] = safe_concat(__kv, 3);\n");
+    body.append("  }\n");
+    body.append("  char* __r = safe_join(__p, (int)__n, \"{\", \", \", \"}\");\n");
+    body.append("  free(__p);\n");
+    body.append("  return __r;\n");
+    body.append("}");
+    stringifierDefs.add(body.toString());
+    return name;
+  }
+
+  private String mapKey(final String keyType) {
+    return switch (keyType) {
+      case "string" -> "__e->key.string_key";
+      case "float" -> "__e->key.float_key";
+      case "boolean" -> "__e->key.bool_key";
+      case "uint" -> "(uint64_t)__e->key.int_key";
+      default -> "__e->key.int_key";
+    };
+  }
+
+  private String mapValue(final String valueType) {
+    switch (valueType) {
+      case "string":
+        return "__e->value.string_val";
+      case "float":
+        return "__e->value.float_val";
+      case "boolean":
+        return "__e->value.bool_val";
+      case "uint":
+        return "(uint64_t)__e->value.int_val";
+      case "int":
+        return "__e->value.int_val";
+      default:
+        break;
+    }
+    if (valueType.startsWith("list<")
+        || valueType.startsWith("map<")
+        || valueType.startsWith("set<")) {
+      return "(" + translate(valueType) + ")__e->value.ptr_val";
+    }
+    if (enumerations.containsKey(valueType)) {
+      return recursive.contains(valueType)
+          ? "(" + valueType + "*)__e->value.ptr_val"
+          : "(*(" + valueType + "*)__e->value.ptr_val)";
+    }
+    return "__e->value.int_val";
+  }
+
+  private String ensureStructStr(final String type) {
+    final var existing = stringifiers.get(type);
+    if (existing != null) return existing;
+    final var name = "safe_str__" + typeId(type);
+    stringifiers.put(type, name);
+    final var ctype = translate(type);
+    final var self = recursive.contains(type) ? "v->" : "v.";
+    stringifierDecls.add("static char* " + name + "(" + ctype + " v);");
+    final var fields = structs.get(type).fields();
+    final var body = new StringBuilder();
+    body.append("static char* ").append(name).append("(").append(ctype).append(" v) {\n");
+    body.append("  const char* __p[").append(fields.size() * 2 + 2).append("];\n");
+    body.append("  int __n = 0;\n");
+    body.append("  __p[__n++] = \"").append(type).append(" { \";\n");
+    for (int i = 0; i < fields.size(); i++) {
+      final var field = fields.get(i);
+      final var ftype = field.type().fullName();
+      final var label = (i == 0 ? "" : ", ") + field.name() + ": ";
+      body.append("  __p[__n++] = \"").append(label).append("\";\n");
+      body.append("  __p[__n++] = ")
+          .append(stringify(self + mangle(field.name()), ftype))
+          .append(";\n");
+    }
+    body.append("  __p[__n++] = \" }\";\n");
+    body.append("  return safe_concat(__p, __n);\n");
+    body.append("}");
+    stringifierDefs.add(body.toString());
+    return name;
+  }
+
+  private String ensureEnumStr(final String type) {
+    final var existing = stringifiers.get(type);
+    if (existing != null) return existing;
+    final var name = "safe_str__" + typeId(type);
+    stringifiers.put(type, name);
+    final var ctype = translate(type);
+    final var self = recursive.contains(type) ? "v->" : "v.";
+    stringifierDecls.add("static char* " + name + "(" + ctype + " v);");
+    final var body = new StringBuilder();
+    body.append("static char* ").append(name).append("(").append(ctype).append(" v) {\n");
+    body.append("  switch (").append(self).append("tag) {\n");
+    for (final var variant : enumerations.get(type).variants()) {
+      body.append("    case ").append(type).append("_").append(variant.name()).append(": {\n");
+      if (!variant.hasFields()) {
+        body.append("      return safe_arena_strdup(\"")
+            .append(type)
+            .append(".")
+            .append(variant.name())
+            .append("\");\n");
+      } else {
+        final var fields = variant.fields();
+        body.append("      const char* __p[").append(fields.size() * 2 + 2).append("];\n");
+        body.append("      int __n = 0;\n");
+        body.append("      __p[__n++] = \"")
+            .append(type)
+            .append(".")
+            .append(variant.name())
+            .append("(\";\n");
+        for (int i = 0; i < fields.size(); i++) {
+          final var ftype = fields.get(i).fullName();
+          if (i > 0) body.append("      __p[__n++] = \", \";\n");
+          body.append("      __p[__n++] = ")
+              .append(stringify(self + "data." + variant.name() + "._" + i, ftype))
+              .append(";\n");
+        }
+        body.append("      __p[__n++] = \")\";\n");
+        body.append("      return safe_concat(__p, __n);\n");
+      }
+      body.append("    }\n");
+    }
+    body.append("  }\n");
+    body.append("  return safe_arena_strdup(\"?\");\n");
+    body.append("}");
+    stringifierDefs.add(body.toString());
+    return name;
+  }
+
   private boolean isPointerType(final String type) {
     return type != null
         && (type.startsWith("list")
@@ -1939,6 +2230,18 @@ public class CCodeGenerator implements ASTVisitor<String> {
                   "__interp_offset__ += snprintf(__interp_buf__ + __interp_offset__, 65536 - __interp_offset__, \"%s\", (")
               .append(code)
               .append(") ? \"true\" : \"false\");\n");
+        } else if ("float".equals(type)) {
+          builder
+              .append(
+                  "__interp_offset__ += snprintf(__interp_buf__ + __interp_offset__, 65536 - __interp_offset__, \"%s\", safe_string_val_float(")
+              .append(code)
+              .append("));\n");
+        } else if (stringifiable(type)) {
+          builder
+              .append(
+                  "__interp_offset__ += snprintf(__interp_buf__ + __interp_offset__, 65536 - __interp_offset__, \"%s\", ")
+              .append(stringify(code, type))
+              .append(");\n");
         } else {
           final var fmt = format(part);
           builder
@@ -2355,6 +2658,11 @@ public class CCodeGenerator implements ASTVisitor<String> {
     }
 
     @Override
+    public boolean isStruct(final String type) {
+      return structs.containsKey(type);
+    }
+
+    @Override
     public Map<String, String> variables() {
       return CCodeGenerator.this.variables();
     }
@@ -2467,6 +2775,11 @@ public class CCodeGenerator implements ASTVisitor<String> {
     }
 
     @Override
+    public boolean isStruct(final String type) {
+      return structs.containsKey(type);
+    }
+
+    @Override
     public Set<String> recursive() {
       return recursive;
     }
@@ -2555,6 +2868,16 @@ public class CCodeGenerator implements ASTVisitor<String> {
     @Override
     public boolean isFunctionType(final String type) {
       return CCodeGenerator.this.isFunctionType(type);
+    }
+
+    @Override
+    public boolean isStruct(final String type) {
+      return structs.containsKey(type);
+    }
+
+    @Override
+    public boolean isRecursive(final String type) {
+      return recursive.contains(type);
     }
 
     @Override
@@ -2651,6 +2974,16 @@ public class CCodeGenerator implements ASTVisitor<String> {
     @Override
     public String escape(final String text) {
       return CCodeGenerator.this.escape(text);
+    }
+
+    @Override
+    public boolean stringifiable(final String type) {
+      return CCodeGenerator.this.stringifiable(type);
+    }
+
+    @Override
+    public String stringify(final String code, final String type) {
+      return CCodeGenerator.this.stringify(code, type);
     }
   }
 

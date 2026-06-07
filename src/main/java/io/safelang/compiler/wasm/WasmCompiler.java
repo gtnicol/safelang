@@ -60,8 +60,7 @@ public final class WasmCompiler extends AbstractASTVisitor<SymbolKey> {
 
   // === Helpers (constructed lazily once runtime/module are set up) ===
   private final io.safelang.compiler.refcount.RefcountPolicy rc =
-      new io.safelang.compiler.refcount.RefcountPolicy(
-          Set.of(), new HashMap<>());
+      new io.safelang.compiler.refcount.RefcountPolicy(Set.of(), new HashMap<>());
   private WasmBuiltinSupport support;
   private WasmBuiltinEmitter emitter;
   private WasmBuiltinRegistrar registrar;

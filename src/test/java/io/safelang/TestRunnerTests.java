@@ -24,7 +24,8 @@ class TestRunnerTests {
     return "true".equalsIgnoreCase(System.getProperty("safe.test.interpreter", ""))
         || "true".equalsIgnoreCase(System.getProperty("safe.test.bytecode", ""))
         || "true".equalsIgnoreCase(System.getProperty("safe.test.native", ""))
-        || "true".equalsIgnoreCase(System.getProperty("safe.test.wasm", ""));
+        || "true".equalsIgnoreCase(System.getProperty("safe.test.wasm", ""))
+        || "true".equalsIgnoreCase(System.getProperty("safe.test.jvm", ""));
   }
 
   private static boolean wasmtime() {
@@ -77,6 +78,22 @@ class TestRunnerTests {
     } finally {
       Files.deleteIfExists(temp);
     }
+  }
+
+  // ========== JVM Backend ==========
+
+  @Test
+  void jvmDirectory() {
+    Assumptions.assumeTrue(enabled("jvm"), "jvm backend not enabled");
+    final var runner = new TestRunner(false, false, false, false, true);
+    assertEquals(0, runner.execute("tests/"));
+  }
+
+  @Test
+  void jvmSingleTest() {
+    Assumptions.assumeTrue(enabled("jvm"), "jvm backend not enabled");
+    final var runner = new TestRunner(false, false, false, false, true);
+    assertEquals(0, runner.execute("tests/test_functional.safe"));
   }
 
   // ========== Bytecode Backend ==========

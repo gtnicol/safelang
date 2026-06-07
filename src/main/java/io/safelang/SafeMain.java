@@ -34,6 +34,7 @@ public class SafeMain {
     var native_ = false;
     var bytecode_ = false;
     var wasm_ = false;
+    var jvm_ = false;
     final var entries = new ArrayList<String>();
     final var filtered = new ArrayList<String>();
     for (var i = 0; i < args.length; i++) {
@@ -51,6 +52,9 @@ public class SafeMain {
           break;
         case "--wasm":
           wasm_ = true;
+          break;
+        case "--jvm":
+          jvm_ = true;
           break;
         case "--module-path":
           if (i + 1 >= args.length) {
@@ -129,8 +133,11 @@ public class SafeMain {
         case "wasm":
           wasm(read(filename), filename, strict, modulePath);
           break;
+        case "jvm":
+          jvm(read(filename), filename, strict, modulePath);
+          break;
         case "test":
-          final var runner = new TestRunner(strict, native_, bytecode_, wasm_);
+          final var runner = new TestRunner(strict, native_, bytecode_, wasm_, jvm_);
           System.exit(runner.execute(filename));
           break;
         default:
@@ -322,6 +329,20 @@ public class SafeMain {
     }
   }
 
+  private static void jvm(
+      final String source,
+      final String filename,
+      final boolean strict,
+      final List<Path> modulePath) {
+    try {
+      final var result = SafeRuntime.jvm(source, filename, strict, modulePath);
+      System.out.println("Compiled to: " + result.output());
+      result.runInstruction().ifPresent(command -> System.out.println("Run with: " + command));
+    } catch (Exception exception) {
+      error("JVM Compiler", exception);
+    }
+  }
+
   public static void extractWasmBuiltins(final Path directory) throws IOException {
     final var target =
         (directory != null ? directory : Path.of(".")).resolve("safe_wasm_builtins.wasm");
@@ -357,6 +378,7 @@ public class SafeMain {
                   compile        Compile a SAFE program to C code (.c file)
                   build          Compile to C and invoke gcc for native binary
                   wasm           Compile to WebAssembly (.wasm file)
+                  jvm            Compile to a self-contained executable JVM jar (.jar)
                   bytecode       Compile a SAFE program to bytecode (.safeb file)
                   vm             Execute a compiled bytecode file (.safeb)
                   disassemble    Decompile bytecode to assembly text
@@ -370,6 +392,7 @@ public class SafeMain {
                   --deterministic    Alias for --strict
                   --native           Use C backend for test execution
                   --wasm             Use WebAssembly backend for test execution
+                  --jvm              Use the JVM bytecode backend for test execution
                   --bytecode         Use bytecode VM for test execution
                   --module-path DIR  Extra directory to search for module imports.
                                      May be repeated, or use the system path separator

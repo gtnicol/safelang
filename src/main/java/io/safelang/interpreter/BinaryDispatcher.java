@@ -12,11 +12,12 @@ import java.util.function.BinaryOperator;
  * <p>Wraps any {@link RuntimeException} thrown from {@link SAFEValue}'s arithmetic into a typed
  * {@link InterpreterException}, preserving the previous behaviour of the inline dispatcher.
  */
-final class BinaryDispatcher {
+public final class BinaryDispatcher {
 
   private BinaryDispatcher() {}
 
-  static SAFEValue dispatch(final String operator, final SAFEValue left, final SAFEValue right) {
+  public static SAFEValue dispatch(
+      final String operator, final SAFEValue left, final SAFEValue right) {
     return switch (operator) {
       case "+" -> arithmetic(SAFEValue::add, left, right);
       case "-" -> arithmetic(SAFEValue::subtract, left, right);

@@ -127,7 +127,7 @@ src/test/java/             JUnit test classes
 stdlib/                    Standard library modules written in SAFE
 examples/                  Example .safe programs (compiled artefacts are git-ignored; build on demand)
 tests/                     SAFE-native test files using the test module
-docs/                      Language introduction, opcode reference, assembler docs
+docs/                      Language introduction, opcode reference, assembler and backend docs (JVM, C, WASM)
 scripts/                   Build helpers (e.g. WASM builtin compilation)
 benchmarks/                Micro-benchmarks
 ```
@@ -241,6 +241,12 @@ More samples live in [`examples/`](examples/): `tour.safe` (language overview), 
 - [`docs/assembler.md`](docs/assembler.md) — `.safea` assembly syntax, `.safeb` binary format, assembler and
   decompiler usage
 - [`docs/opcodes.md`](docs/opcodes.md) — complete reference for every SAFE VM instruction
+- [`docs/jvm-backend.md`](docs/jvm-backend.md) — the JVM bytecode backend: design, the `jvm` command, and the
+  self-contained executable jar
+- [`docs/c-backend.md`](docs/c-backend.md) — the C backend: design, the `compile`/`build` commands, and the
+  self-contained C runtime
+- [`docs/wasm-backend.md`](docs/wasm-backend.md) — the WebAssembly backend: design, the `wasm` command, multi-module
+  linking, and the committed WASI runtime
 
 ## Standard library
 

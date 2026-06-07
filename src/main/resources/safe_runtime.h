@@ -1171,10 +1171,67 @@ static inline char* safe_string_val(int64_t num) {
     return str;
 }
 
+/* Render a double exactly as the interpreter does (Java's Double.toString):
+ * shortest decimal that round-trips, always with a fractional digit, switching
+ * to "d.dddEnn" scientific form outside [1e-3, 1e7). Finds the minimal
+ * significant-digit count whose "%.*e" rendering parses back to the same
+ * double, then reformats per Java's rules. */
+static inline char* safe_double_to_string(double value) {
+    if (isnan(value)) return safe_arena_strdup("NaN");
+    if (isinf(value)) return safe_arena_strdup(value < 0 ? "-Infinity" : "Infinity");
+    if (value == 0.0) return safe_arena_strdup(signbit(value) ? "-0.0" : "0.0");
+
+    char buf[40];
+    int prec;
+    for (prec = 1; prec <= 17; prec++) {
+        snprintf(buf, sizeof(buf), "%.*e", prec - 1, value);
+        if (strtod(buf, NULL) == value) break;
+    }
+    /* Parse buf: [-]d[.ddd]e[+-]NN into sign, significant digits, exponent. */
+    const char* p = buf;
+    int neg = 0;
+    if (*p == '-') { neg = 1; p++; }
+    char digs[40];
+    int nd = 0;
+    digs[nd++] = *p++;
+    if (*p == '.') { p++; while (*p >= '0' && *p <= '9') digs[nd++] = *p++; }
+    p++; /* skip 'e' */
+    int esign = 1;
+    if (*p == '+') p++; else if (*p == '-') { esign = -1; p++; }
+    int exp = atoi(p) * esign;
+    digs[nd] = '\0';
+
+    char out[80];
+    int o = 0;
+    if (neg) out[o++] = '-';
+    if (exp >= -3 && exp <= 6) {
+        if (exp >= 0) {
+            int intdigits = exp + 1;
+            for (int i = 0; i < intdigits; i++) out[o++] = (i < nd) ? digs[i] : '0';
+            out[o++] = '.';
+            if (nd > intdigits) { for (int i = intdigits; i < nd; i++) out[o++] = digs[i]; }
+            else out[o++] = '0';
+        } else {
+            out[o++] = '0'; out[o++] = '.';
+            for (int i = 0; i < (-exp - 1); i++) out[o++] = '0';
+            for (int i = 0; i < nd; i++) out[o++] = digs[i];
+        }
+    } else {
+        out[o++] = digs[0];
+        out[o++] = '.';
+        if (nd > 1) { for (int i = 1; i < nd; i++) out[o++] = digs[i]; }
+        else out[o++] = '0';
+        out[o++] = 'E';
+        o += sprintf(out + o, "%d", exp);
+    }
+    out[o] = '\0';
+    char* result = (char*)safe_arena_alloc((size_t)o + 1);
+    memcpy(result, out, (size_t)o + 1);
+    return result;
+}
+
 static inline char* safe_string_val_float(double num) {
-    char* str = (char*)safe_arena_alloc(64);
-    snprintf(str, 64, "%g", num);
-    return str;
+    return safe_double_to_string(num);
 }
 
 static inline char* safe_string_val_bool(bool b) {
@@ -1187,6 +1244,86 @@ static inline int64_t safe_int_val(const char* str) {
 
 static inline double safe_float_val(const char* str) {
     return strtod(str, NULL);
+}
+
+/* Render a list as "[e0, e1, ...]", matching the interpreter's formatting
+ * (SAFEValue.join): elements separated by ", ", wrapped in square brackets,
+ * strings unquoted. The element `kind` is supplied by the code generator from
+ * the static element type — the runtime cannot recover it for scalar lists,
+ * whose elements are boxed as bare int64_t/double or stored (strings) as char*.
+ * kind: 0=int, 1=float, 2=string, 3=bool, 4=uint. */
+static inline char* safe_list_to_string(SAFEList* list, int kind) {
+    if (!list || list->length == 0) return safe_arena_strdup("[]");
+    int64_t n = list->length;
+    char** parts = (char**)malloc((size_t)n * sizeof(char*));
+    size_t total = 2; /* '[' and ']' */
+    for (int64_t i = 0; i < n; i++) {
+        void* slot = ((void**)list->data)[i];
+        char* part;
+        switch (kind) {
+            case 1: part = safe_string_val_float(*(double*)slot); break;
+            case 2: part = (char*)slot; break;
+            case 3: part = safe_string_val_bool(*(int64_t*)slot != 0); break;
+            case 4:
+                part = (char*)safe_arena_alloc(64);
+                snprintf(part, 64, "%llu", (unsigned long long)*(uint64_t*)slot);
+                break;
+            default: part = safe_string_val(*(int64_t*)slot); break;
+        }
+        parts[i] = part;
+        total += strlen(part);
+        if (i > 0) total += 2; /* ", " */
+    }
+    char* result = (char*)safe_arena_alloc(total + 1);
+    size_t offset = 0;
+    result[offset++] = '[';
+    for (int64_t i = 0; i < n; i++) {
+        if (i > 0) { result[offset++] = ','; result[offset++] = ' '; }
+        size_t len = strlen(parts[i]);
+        memcpy(result + offset, parts[i], len);
+        offset += len;
+    }
+    result[offset++] = ']';
+    result[offset] = '\0';
+    free(parts);
+    return result;
+}
+
+static inline char* safe_string_val_uint(uint64_t num) {
+    char* str = (char*)safe_arena_alloc(64);
+    snprintf(str, 64, "%llu", (unsigned long long)num);
+    return str;
+}
+
+/* Join `count` already-rendered string parts with `sep`, wrapped in `open`/`close`.
+ * Used by the generated recursive stringifiers for lists, tuples, sets, and maps. */
+static inline char* safe_join(const char** parts, int count,
+                              const char* open, const char* sep, const char* close) {
+    size_t seplen = strlen(sep);
+    size_t total = strlen(open) + strlen(close);
+    for (int i = 0; i < count; i++) {
+        total += strlen(parts[i]);
+        if (i > 0) total += seplen;
+    }
+    char* result = (char*)safe_arena_alloc(total + 1);
+    size_t offset = 0;
+    size_t len = strlen(open);
+    memcpy(result + offset, open, len); offset += len;
+    for (int i = 0; i < count; i++) {
+        if (i > 0) { memcpy(result + offset, sep, seplen); offset += seplen; }
+        len = strlen(parts[i]);
+        memcpy(result + offset, parts[i], len); offset += len;
+    }
+    len = strlen(close);
+    memcpy(result + offset, close, len); offset += len;
+    result[offset] = '\0';
+    return result;
+}
+
+/* Concatenate `count` string parts with no separator. Used by the generated
+ * struct/enum stringifiers, which interleave field labels with rendered values. */
+static inline char* safe_concat(const char** parts, int count) {
+    return safe_join(parts, count, "", "", "");
 }
 
 static inline bool safe_bool_val(const char* str) {

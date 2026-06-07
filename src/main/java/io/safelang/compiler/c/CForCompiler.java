@@ -237,6 +237,14 @@ final class CForCompiler {
           .append("SAFETuple ")
           .append(context.user(node.variable()))
           .append(" = *((SAFETuple*)((void**)__list__->data)[__i__]);\n");
+    } else if (context.isStruct(element)) {
+      builder
+          .append(context.translate(element))
+          .append(" ")
+          .append(context.user(node.variable()))
+          .append(" = *((")
+          .append(context.translate(element))
+          .append("*)((void**)__list__->data)[__i__]);\n");
     } else if (context.isPointerType(element)) {
       builder
           .append(context.translate(element))

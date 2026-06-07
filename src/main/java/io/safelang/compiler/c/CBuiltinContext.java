@@ -50,4 +50,16 @@ interface CBuiltinContext {
 
   /** C-escape a Java string literal for embedding in printf. */
   String escape(String text);
+
+  /**
+   * True for compound types ({@code list}/{@code tuple}/{@code map}/struct/enum) needing a
+   * stringifier.
+   */
+  boolean stringifiable(String type);
+
+  /**
+   * A {@code char*} C expression rendering {@code code} (of SAFE {@code type}) like the
+   * interpreter.
+   */
+  String stringify(String code, String type);
 }

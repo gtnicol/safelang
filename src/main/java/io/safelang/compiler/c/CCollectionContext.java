@@ -45,6 +45,12 @@ interface CCollectionContext {
 
   boolean isFunctionType(String type);
 
+  /** True if {@code type} is a user-defined struct (boxed by heap-copy in list elements). */
+  boolean isStruct(String type);
+
+  /** True if {@code type} is a recursive enum/struct (its C value is already a pointer). */
+  boolean isRecursive(String type);
+
   /** Enum registry — required to detect arena-boxed enum values. */
   Map<String, EnumDeclarationNode> enumerations();
 

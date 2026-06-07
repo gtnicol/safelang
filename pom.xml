@@ -49,6 +49,7 @@
         <safe.test.bytecode></safe.test.bytecode>
         <safe.test.native></safe.test.native>
         <safe.test.wasm></safe.test.wasm>
+        <safe.test.jvm></safe.test.jvm>
     </properties>
 
     <dependencies>
@@ -88,6 +89,12 @@
             <id>wasm</id>
             <properties>
                 <safe.test.wasm>true</safe.test.wasm>
+            </properties>
+        </profile>
+        <profile>
+            <id>jvm</id>
+            <properties>
+                <safe.test.jvm>true</safe.test.jvm>
             </properties>
         </profile>
 
@@ -368,6 +375,7 @@
                             <includes>
                                 <include>*.safeb</include>
                                 <include>*.wasm</include>
+                                <include>*.jar</include>
                                 <include>*.c</include>
                                 <include>*.h</include>
                                 <include>hello</include>
@@ -382,6 +390,7 @@
                             <includes>
                                 <include>*.safeb</include>
                                 <include>*.wasm</include>
+                                <include>*.jar</include>
                                 <include>*.c</include>
                                 <include>*.h</include>
                                 <include>bench_btree</include>
@@ -395,6 +404,7 @@
                             <includes>
                                 <include>*.safeb</include>
                                 <include>*.wasm</include>
+                                <include>*.jar</include>
                                 <include>*.c</include>
                                 <include>*.h</include>
                                 <include>*.bak</include>
@@ -444,6 +454,7 @@
                         <safe.test.bytecode>${safe.test.bytecode}</safe.test.bytecode>
                         <safe.test.native>${safe.test.native}</safe.test.native>
                         <safe.test.wasm>${safe.test.wasm}</safe.test.wasm>
+                        <safe.test.jvm>${safe.test.jvm}</safe.test.jvm>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>

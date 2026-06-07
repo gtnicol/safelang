@@ -59,6 +59,9 @@ final class CBuiltinResolver {
             if ("bytes".equals(type)) return "safe_bytes_tostr(" + arg + ")";
             if ("float".equals(type)) return "safe_string_val_float(" + arg + ")";
             if ("boolean".equals(type)) return "safe_string_val_bool(" + arg + ")";
+            final var kind = listKind(type);
+            if (kind >= 0) return "safe_list_to_string(" + arg + ", " + kind + ")";
+            if (context.stringifiable(type)) return context.stringify(arg, type);
             return "safe_string_val(" + arg + ")";
           }
           return null;
@@ -735,6 +738,18 @@ final class CBuiltinResolver {
     if (context.isBooleanExpression(arg)) {
       return "printf(\"%s\\n\", safe_string_val_bool(" + emitted + "))";
     }
+    // Floats must render like the interpreter (Double.toString), not printf's "%g".
+    if ("float".equals(context.infer(arg))) {
+      return "printf(\"%s\\n\", safe_string_val_float(" + emitted + "))";
+    }
+    final var kind = listKind(context.infer(arg));
+    if (kind >= 0) {
+      return "safe_println_str(safe_list_to_string(" + emitted + ", " + kind + "))";
+    }
+    final var type = context.infer(arg);
+    if (context.stringifiable(type)) {
+      return "safe_println_str(" + context.stringify(emitted, type) + ")";
+    }
     final var fmt = context.format(arg);
     return "printf(\"" + fmt + "\\n\", " + emitted + ")";
   }
@@ -752,7 +767,38 @@ final class CBuiltinResolver {
     if (context.isBooleanExpression(arg)) {
       return "printf(\"%s\", safe_string_val_bool(" + emitted + "))";
     }
+    // Floats must render like the interpreter (Double.toString), not printf's "%g".
+    if ("float".equals(context.infer(arg))) {
+      return "printf(\"%s\", safe_string_val_float(" + emitted + "))";
+    }
+    final var kind = listKind(context.infer(arg));
+    if (kind >= 0) {
+      return "safe_print_str(safe_list_to_string(" + emitted + ", " + kind + "))";
+    }
+    final var type = context.infer(arg);
+    if (context.stringifiable(type)) {
+      return "safe_print_str(" + context.stringify(emitted, type) + ")";
+    }
     final var fmt = context.format(arg);
     return "printf(\"" + fmt + "\", " + emitted + ")";
+  }
+
+  /**
+   * Element kind for {@code safe_list_to_string} when {@code type} is a list of a scalar element
+   * (0=int, 1=float, 2=string, 3=bool, 4=uint), or {@code -1} when the type is not a scalar list —
+   * lists of objects, enums, tuples, maps, or nested lists are not stringifiable in the C backend.
+   */
+  private static int listKind(final String type) {
+    if (type == null || !type.startsWith("list<") || !type.endsWith(">")) {
+      return -1;
+    }
+    return switch (type.substring(5, type.length() - 1)) {
+      case "int" -> 0;
+      case "float" -> 1;
+      case "string" -> 2;
+      case "boolean" -> 3;
+      case "uint" -> 4;
+      default -> -1;
+    };
   }
 }

@@ -40,6 +40,9 @@ interface CIndexContext {
 
   boolean isPointerType(String type);
 
+  /** True if {@code type} is a user-defined struct (stored heap-boxed in list elements). */
+  boolean isStruct(String type);
+
   /** Is the SAFE type a heap-allocated, refcounted value carrying a SAFEHeader? */
   boolean isHeapRc(String type);
 

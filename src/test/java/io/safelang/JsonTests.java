@@ -545,8 +545,7 @@ class JsonTests {
 
   @Test
   void loadJsonFile() throws Exception {
-    Files.writeString(
-        Path.of("/tmp/test_junit_json.json"), "{\"x\":42}");
+    Files.writeString(Path.of("/tmp/test_junit_json.json"), "{\"x\":42}");
     final var result =
         run(
             PREAMBLE
@@ -570,8 +569,7 @@ class JsonTests {
 
   @Test
   void loadJsonlFile() throws Exception {
-    Files.writeString(
-        Path.of("/tmp/test_junit.jsonl"), "{\"id\":1}\n{\"id\":2}\n{\"id\":3}");
+    Files.writeString(Path.of("/tmp/test_junit.jsonl"), "{\"id\":1}\n{\"id\":2}\n{\"id\":3}");
     final var result =
         run(
             PREAMBLE

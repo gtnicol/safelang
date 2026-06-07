@@ -47,6 +47,9 @@ interface CForContext {
 
   boolean isFunctionType(String type);
 
+  /** True if {@code type} is a user-defined struct (stored heap-boxed in list elements). */
+  boolean isStruct(String type);
+
   /** Recursive-enum set (for emitting pointer-typed loop variables). */
   Set<String> recursive();
 

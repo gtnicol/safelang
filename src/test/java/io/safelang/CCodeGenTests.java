@@ -371,6 +371,164 @@ class CCodeGenTests {
   }
 
   @Test
+  void parityListPrinting() throws Exception {
+    final var source =
+        """
+                program test;
+                import io;
+                import std;
+                list<int> a = [1, 2, 3];
+                list<string> b = ["x", "y", "z"];
+                list<boolean> c = [true, false];
+                list<int> empty = [];
+                io:println(a);
+                io:println(b);
+                io:println(c);
+                io:println(empty);
+                io:println(std:range(5));
+                io:println(std:str(a));
+                """;
+    final var expected = TestHelper.run(source);
+    final var actual = compileAndRun(source);
+    assertEquals(expected, actual);
+  }
+
+  @Test
+  void parityFloatFormatting() throws Exception {
+    final var source =
+        """
+                program test;
+                import io;
+                import std;
+                io:println(2.0);
+                io:println(3.25);
+                io:println(1.0 / 3.0);
+                io:println(0.001);
+                io:println(100000000.0);
+                io:println(0.0001);
+                list<float> xs = [1.5, 2.0, 3.25];
+                io:println(xs);
+                io:println(std:str(2.0));
+                io:println(`v=${2.0}`);
+                """;
+    final var expected = TestHelper.run(source);
+    final var actual = compileAndRun(source);
+    assertEquals(expected, actual);
+  }
+
+  @Test
+  void parityStructPrinting() throws Exception {
+    final var source =
+        """
+                program test;
+                import io;
+                import std;
+                type Point { int x; int y; }
+                type Bag { string name; list<int> items; }
+                Point p = Point { x: 3, y: 4 };
+                io:println(p);
+                io:println(std:str(p));
+                io:println(`pt=${p}`);
+                io:println(Bag { name: "n", items: [1, 2, 3] });
+                """;
+    final var expected = TestHelper.run(source);
+    final var actual = compileAndRun(source);
+    assertEquals(expected, actual);
+  }
+
+  @Test
+  void parityEnumPrinting() throws Exception {
+    final var source =
+        """
+                program test;
+                import io;
+                enum Shape { Circle(float), Rect(int, int), Dot }
+                io:println(Circle(2.5));
+                io:println(Rect(3, 4));
+                io:println(Dot);
+                """;
+    final var expected = TestHelper.run(source);
+    final var actual = compileAndRun(source);
+    assertEquals(expected, actual);
+  }
+
+  @Test
+  void parityTupleAndMapPrinting() throws Exception {
+    final var source =
+        """
+                program test;
+                import io;
+                (int, string) t = (1, "a");
+                io:println(t);
+                map<string, int> m = {"a": 1, "b": 2};
+                io:println(m);
+                map<int, string> n = {1: "one", 2: "two"};
+                io:println(n);
+                list<list<int>> nested = [[1, 2], [3, 4]];
+                io:println(nested);
+                """;
+    final var expected = TestHelper.run(source);
+    final var actual = compileAndRun(source);
+    assertEquals(expected, actual);
+  }
+
+  @Test
+  void parityListOfStructs() throws Exception {
+    final var source =
+        """
+                program test;
+                import io;
+                type Point { int x; int y; }
+                list<Point> ps = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }];
+                io:println(ps[0].x);
+                io:println(ps[1].y);
+                io:println(ps);
+                int total = 0;
+                for p in ps { total = total + p.x; }
+                io:println(total);
+                ps[0] = Point { x: 9, y: 9 };
+                io:println(ps[0].x);
+                """;
+    final var expected = TestHelper.run(source);
+    final var actual = compileAndRun(source);
+    assertEquals(expected, actual);
+  }
+
+  @Test
+  void parityListOfTuplesAndEnums() throws Exception {
+    final var source =
+        """
+                program test;
+                import io;
+                enum Shape { Circle(int), Square }
+                list<(int, string)> ts = [(1, "a"), (2, "b")];
+                io:println(ts);
+                for pair in ts { const (n, m) = pair; io:println(m); }
+                list<Shape> shapes = [Circle(5), Square];
+                io:println(shapes);
+                io:println(shapes[0]);
+                """;
+    final var expected = TestHelper.run(source);
+    final var actual = compileAndRun(source);
+    assertEquals(expected, actual);
+  }
+
+  @Test
+  void parityListOfStructsNested() throws Exception {
+    final var source =
+        """
+                program test;
+                import io;
+                type Bag { string name; list<int> items; }
+                list<Bag> bs = [Bag { name: "a", items: [1, 2] }, Bag { name: "b", items: [3] }];
+                io:println(bs);
+                """;
+    final var expected = TestHelper.run(source);
+    final var actual = compileAndRun(source);
+    assertEquals(expected, actual);
+  }
+
+  @Test
   void parityStringConcat() throws Exception {
     final var source =
         """

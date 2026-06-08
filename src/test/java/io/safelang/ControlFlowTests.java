@@ -185,4 +185,47 @@ class ControlFlowTests {
                 }
                 """));
   }
+
+  @Test
+  void rangeLiteralOverflowThrowsInterpreter() {
+    // end - start overflows long and wraps to a tiny count; without an overflow-safe
+    // guard the size check is bypassed and the interpreter tries to build ~1.8e19 elements.
+    assertThrows(
+        InterpreterException.class,
+        () ->
+            TestHelper.run(
+                """
+                program test;
+                list<int> r = -9223372036854775807 .. 9223372036854775807;
+                """));
+  }
+
+  @Test
+  void rangeStepArgsInterpreter() {
+    final var source =
+        """
+        program test;
+        import io;
+        import std;
+        io:println(std:range(5));
+        io:println(std:range(2, 8));
+        io:println(std:range(2, 8, 2));
+        io:println(std:range(10, 0, -2));
+        """;
+    final var expected = "[0, 1, 2, 3, 4]\n[2, 3, 4, 5, 6, 7]\n[2, 4, 6]\n[10, 8, 6, 4, 2]";
+    assertEquals(expected, TestHelper.run(source));
+    assertEquals(expected, TestHelper.bytecode(source));
+  }
+
+  @Test
+  void rangeLiteralOverflowThrowsBytecode() {
+    assertThrows(
+        BytecodeException.class,
+        () ->
+            TestHelper.bytecode(
+                """
+                program test;
+                list<int> r = -9223372036854775807 .. 9223372036854775807;
+                """));
+  }
 }

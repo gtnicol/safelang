@@ -13,9 +13,9 @@ public record ProgramNode(
     implements ASTNode {
 
   public ProgramNode {
-    imports = imports != null ? imports : new ArrayList<>();
-    declarations = declarations != null ? declarations : new ArrayList<>();
-    statements = statements != null ? statements : new ArrayList<>();
+    imports = imports != null ? List.copyOf(imports) : List.of();
+    declarations = declarations != null ? List.copyOf(declarations) : List.of();
+    statements = statements != null ? List.copyOf(statements) : List.of();
   }
 
   @Override

@@ -1,5 +1,9 @@
 # SAFE
 
+[![CI](https://github.com/gtnicol/safelang/actions/workflows/ci.yml/badge.svg)](https://github.com/gtnicol/safelang/actions/workflows/ci.yml)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](LICENSE)
+[![Java 21+](https://img.shields.io/badge/Java-21%2B-orange.svg)](https://adoptium.net/)
+
 **SAFE** (Simple Atomic Finite Expressions) is a small programming language designed to be practical for everyday
 tasks while being amenable to formal verification and **guaranteed to terminate**. Every program SAFE accepts either
 finishes or traps at runtime — it never silently loops.
@@ -45,41 +49,46 @@ Requires Java 21+ and Maven.
 mvn clean package -DskipTests
 ```
 
-The build produces `target/safe-lang-1.0-SNAPSHOT.jar`.
+The build produces two artifacts in `target/`:
+
+- `safe-lang-1.0.0.jar` — the thin library jar (declares ANTLR as a dependency), for embedding the
+  JSR-223 `ScriptEngine` in another project.
+- `safe-lang-1.0.0-cli.jar` — a self-contained executable (`java -jar … <subcommand>`); this is the
+  one the examples below use.
 
 ## Running programs
 
 ```bash
 # Interpret
-java -jar target/safe-lang-1.0-SNAPSHOT.jar run examples/hello.safe
+java -jar target/safe-lang-1.0.0-cli.jar run examples/hello.safe
 
 # Bytecode pipeline
-java -jar target/safe-lang-1.0-SNAPSHOT.jar bytecode examples/fibonacci.safe
-java -jar target/safe-lang-1.0-SNAPSHOT.jar vm examples/fibonacci.safeb
+java -jar target/safe-lang-1.0.0-cli.jar bytecode examples/fibonacci.safe
+java -jar target/safe-lang-1.0.0-cli.jar vm examples/fibonacci.safeb
 
 # Native build via C
-java -jar target/safe-lang-1.0-SNAPSHOT.jar build examples/fibonacci.safe
+java -jar target/safe-lang-1.0.0-cli.jar build examples/fibonacci.safe
 ./examples/fibonacci
 
 # Compile to WebAssembly
-java -jar target/safe-lang-1.0-SNAPSHOT.jar wasm examples/fibonacci.safe
+java -jar target/safe-lang-1.0.0-cli.jar wasm examples/fibonacci.safe
 wasmtime examples/fibonacci.wasm          # or any WASI-capable runtime
 
 # Assembly round-trip
-java -jar target/safe-lang-1.0-SNAPSHOT.jar disassemble examples/fibonacci.safeb
-java -jar target/safe-lang-1.0-SNAPSHOT.jar assemble file.safea
+java -jar target/safe-lang-1.0.0-cli.jar disassemble examples/fibonacci.safeb
+java -jar target/safe-lang-1.0.0-cli.jar assemble file.safea
 
 # Debugging aids
-java -jar target/safe-lang-1.0-SNAPSHOT.jar tokens examples/hello.safe
-java -jar target/safe-lang-1.0-SNAPSHOT.jar ast examples/hello.safe
+java -jar target/safe-lang-1.0.0-cli.jar tokens examples/hello.safe
+java -jar target/safe-lang-1.0.0-cli.jar ast examples/hello.safe
 
 # SAFE-native test runner
-java -jar target/safe-lang-1.0-SNAPSHOT.jar test tests/
-java -jar target/safe-lang-1.0-SNAPSHOT.jar test --native tests/
+java -jar target/safe-lang-1.0.0-cli.jar test tests/
+java -jar target/safe-lang-1.0.0-cli.jar test --native tests/
 ```
 
-Useful flags: `--strict` / `--deterministic` (purity checking), and `--native` / `--bytecode` / `--wasm`
-(select the backend for the test runner).
+Useful flags: `--strict` / `--deterministic` (purity checking), and `--bytecode` / `--jvm` /
+`--native` / `--wasm` (select the backend for the test runner).
 
 ### WebAssembly backend
 

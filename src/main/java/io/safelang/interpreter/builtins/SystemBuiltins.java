@@ -25,34 +25,49 @@ public final class SystemBuiltins {
                       "len() requires a list, string, map, set, or bytes argument");
             });
 
+    // range(end) | range(start, end) | range(start, end, step). End-exclusive, Python-style;
+    // step may be negative for a descending range. Curried by argument count.
     executors.register(
         "range",
         args -> {
+          final long start;
+          final long end;
+          final long step;
           if (args.size() == 1) {
-            final var end = args.getFirst().asInt();
-            if (end > SAFEValue.MAX_LIST_SIZE) {
-              throw new InterpreterException(
-                  "range size " + end + " exceeds maximum of " + SAFEValue.MAX_LIST_SIZE);
-            }
-            final List<SAFEValue> result = new ArrayList<>();
-            for (long i = 0; i < end; i++) {
-              result.add(SAFEValue.ofInt(i));
-            }
-            return SAFEValue.ofList(result);
+            start = 0;
+            end = args.getFirst().asInt();
+            step = 1;
           } else {
-            final var start = args.getFirst().asInt();
-            final var end = args.get(1).asInt();
-            final var count = end - start;
-            if (count > SAFEValue.MAX_LIST_SIZE) {
-              throw new InterpreterException(
-                  "range size " + count + " exceeds maximum of " + SAFEValue.MAX_LIST_SIZE);
-            }
-            final List<SAFEValue> result = new ArrayList<>();
-            for (long i = start; i < end; i++) {
-              result.add(SAFEValue.ofInt(i));
-            }
+            start = args.getFirst().asInt();
+            end = args.get(1).asInt();
+            step = args.size() >= 3 ? args.get(2).asInt() : 1;
+          }
+          if (step == 0) {
+            throw new InterpreterException("range step cannot be zero");
+          }
+          final List<SAFEValue> result = new ArrayList<>();
+          if ((step > 0 && start >= end) || (step < 0 && start <= end)) {
             return SAFEValue.ofList(result);
           }
+          // Overflow-safe element count: |end - start| via subtractExact (a span wider than
+          // Long range is rejected, not wrapped), then ceil-divided by |step|.
+          final long span;
+          try {
+            span = Math.subtractExact(step > 0 ? end : start, step > 0 ? start : end);
+          } catch (final ArithmeticException overflow) {
+            throw new InterpreterException(
+                "range size exceeds maximum of " + SAFEValue.MAX_LIST_SIZE);
+          }
+          final var magnitude = Math.abs(step);
+          final var size = span / magnitude + (span % magnitude == 0 ? 0 : 1);
+          if (size > SAFEValue.MAX_LIST_SIZE || size < 0) {
+            throw new InterpreterException(
+                "range size " + size + " exceeds maximum of " + SAFEValue.MAX_LIST_SIZE);
+          }
+          for (long i = 0, value = start; i < size; i++, value += step) {
+            result.add(SAFEValue.ofInt(value));
+          }
+          return SAFEValue.ofList(result);
         });
 
     executors.register("str", args -> SAFEValue.ofString(args.getFirst().asString()));

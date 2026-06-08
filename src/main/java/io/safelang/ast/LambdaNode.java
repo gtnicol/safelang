@@ -9,7 +9,7 @@ public record LambdaNode(int line, int column, List<ParameterNode> parameters, A
     implements ASTNode {
 
   public LambdaNode {
-    parameters = parameters != null ? new ArrayList<>(parameters) : new ArrayList<>();
+    parameters = parameters != null ? List.copyOf(parameters) : List.of();
   }
 
   @Override

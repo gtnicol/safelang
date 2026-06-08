@@ -7,7 +7,7 @@ public record WhileStatementNode(
     int line, int column, ASTNode condition, ASTNode bound, List<ASTNode> body) implements ASTNode {
 
   public WhileStatementNode {
-    body = body != null ? new ArrayList<>(body) : new ArrayList<>();
+    body = body != null ? List.copyOf(body) : List.of();
   }
 
   @Override

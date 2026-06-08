@@ -12,8 +12,8 @@ public record TypeDeclarationNode(
     implements ASTNode {
 
   public TypeDeclarationNode {
-    parameters = parameters != null ? parameters : new ArrayList<>();
-    fields = fields != null ? fields : new ArrayList<>();
+    parameters = parameters != null ? List.copyOf(parameters) : List.of();
+    fields = fields != null ? List.copyOf(fields) : List.of();
   }
 
   public TypeDeclarationNode(

@@ -45,7 +45,7 @@ public class ModuleRegistry {
           }
         }
         case VariableDeclarationNode constant -> {
-          if (constant.isConstant()) {
+          if (constant.isConstant() && constant.isPublic()) {
             moduleConstants.put(constant.name(), constant);
           }
         }

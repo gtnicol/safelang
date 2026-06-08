@@ -1,14 +1,13 @@
 package io.safelang.ast;
 
 import java.util.*;
-import java.util.ArrayList;
 
 public record IndexAssignmentNode(
     int line, int column, ASTNode container, List<ASTNode> indices, ASTNode value)
     implements ASTNode {
 
   public IndexAssignmentNode {
-    indices = indices != null ? new ArrayList<>(indices) : new ArrayList<>();
+    indices = indices != null ? List.copyOf(indices) : List.of();
   }
 
   @Override

@@ -8,10 +8,6 @@ public int len(string s) {
     return len(s);
 }
 
-public list<int> range(int end) {
-    return range(end);
-}
-
 public list<int> span(int start, int end) {
     return range(start, end);
 }

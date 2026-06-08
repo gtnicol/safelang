@@ -826,15 +826,14 @@ class SemanticAnalyzerTests {
 
   @Test
   void rangeThreeArgs() {
-    assertThrows(
-        SemanticException.class,
+    assertDoesNotThrow(
         () ->
             analyze(
                 """
                 program test;
                 import std;
                 import io;
-                for i in std:range(1, 2, 3) {
+                for i in std:range(1, 10, 2) {
                     io:println(i);
                 }
                 """));
@@ -864,8 +863,11 @@ class SemanticAnalyzerTests {
                 program test;
                 import std;
                 import io;
-                for i in std:span(1, 10) {
+                for i in std:range(1, 10) {
                     io:println(i);
+                }
+                for j in std:span(1, 10) {
+                    io:println(j);
                 }
                 """));
   }
@@ -1926,5 +1928,171 @@ class SemanticAnalyzerTests {
     assertTrue(
         result.stream().anyMatch(w -> w.contains("resource leak")),
         "Expected resource leak warning, got: " + result);
+  }
+
+  // --- while-bound input immutability ---
+  // The bound is evaluated once, so a name it references must not be mutated in the body. The
+  // collector now descends into every expression form, so a bound that hides the name inside an
+  // if/case/do/list/interpolation is still protected — a hand-rolled switch used to miss these.
+
+  @Test
+  void testBoundNameMutationRejectedSimple() {
+    assertThrows(
+        SemanticException.class,
+        () ->
+            analyze(
+                """
+                program test;
+                int a = 5;
+                while (a < 10) bound (a) {
+                    a = a + 1;
+                }
+                """));
+  }
+
+  @Test
+  void testBoundNameInsideIfMutationRejected() {
+    assertThrows(
+        SemanticException.class,
+        () ->
+            analyze(
+                """
+                program test;
+                int a = 5;
+                while (a < 10) bound (if (a > 0) then a else 0) {
+                    a = a + 1;
+                }
+                """));
+  }
+
+  @Test
+  void testBoundNameInsideCaseMutationRejected() {
+    assertThrows(
+        SemanticException.class,
+        () ->
+            analyze(
+                """
+                program test;
+                int a = 5;
+                while (a < 10) bound (case a of { 0: 0; default: a; }) {
+                    a = a + 1;
+                }
+                """));
+  }
+
+  @Test
+  void testBoundNameInsideDoMutationRejected() {
+    assertThrows(
+        SemanticException.class,
+        () ->
+            analyze(
+                """
+                program test;
+                int a = 5;
+                while (a < 10) bound (do { a }) {
+                    a = a + 1;
+                }
+                """));
+  }
+
+  @Test
+  void testBoundNameInsideListLiteralMutationRejected() {
+    assertThrows(
+        SemanticException.class,
+        () ->
+            analyze(
+                """
+                program test;
+                import collections;
+                int a = 5;
+                while (a < 10) bound (collections:size([a, a])) {
+                    a = a + 1;
+                }
+                """));
+  }
+
+  @Test
+  void testBoundNameInsideInterpolationMutationRejected() {
+    assertThrows(
+        SemanticException.class,
+        () ->
+            analyze(
+                """
+                program test;
+                import std;
+                int a = 5;
+                while (a < 10) bound (std:len(`${a}`)) {
+                    a = a + 1;
+                }
+                """));
+  }
+
+  @Test
+  void testUnreferencedNameMutationAllowed() {
+    assertDoesNotThrow(
+        () ->
+            analyze(
+                """
+                program test;
+                int a = 5;
+                int b = 0;
+                while (b < 10) bound (if (a > 0) then a else 0) {
+                    b = b + 1;
+                }
+                """));
+  }
+
+  // --- generic type matching (raw inference holes stay valid; module-aware binding) ---
+
+  @Test
+  void testEmptyListAssignsToParameterizedList() {
+    // `[]` resolves to raw `list`; assigning to `list<int>` must remain valid (inference hole).
+    assertDoesNotThrow(
+        () ->
+            analyze(
+                """
+                program test;
+                list<int> xs = [];
+                """));
+  }
+
+  @Test
+  void testEmptyMapAssignsToParameterizedMap() {
+    assertDoesNotThrow(
+        () ->
+            analyze(
+                """
+                program test;
+                map<string, int> m = {};
+                """));
+  }
+
+  @Test
+  void testEmptyListElementTypeStillCheckedWhenNonEmpty() {
+    // The hole only applies to the raw case — a non-empty literal still type-checks its elements.
+    assertThrows(
+        SemanticException.class,
+        () ->
+            analyze(
+                """
+                program test;
+                list<int> xs = ["a", "b"];
+                """));
+  }
+
+  @Test
+  void testModuleGenericEnumBindsAcrossImport() {
+    // option:unwrap is generic (?T) over the module-qualified enum Option; binding the argument's
+    // type must succeed across the module boundary (bind() uses module-aware name equivalence).
+    assertDoesNotThrow(
+        () ->
+            analyze(
+                """
+                program test;
+                import io;
+                import option;
+                int x = option:unwrap(option:Some(5), 0);
+                io:println(`${x}`);
+                """));
   }
 }

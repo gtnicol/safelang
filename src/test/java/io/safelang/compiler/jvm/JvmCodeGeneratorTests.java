@@ -6,7 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import io.safelang.SafeRuntime;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
+import java.io.StringWriter;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -24,6 +27,22 @@ class JvmCodeGeneratorTests {
 
         io:println("Hello, World!");
         io:println("SAFE Language v1.0");
+        """;
+    assertEquals(interpret(source), compileAndRun(source));
+  }
+
+  @Test
+  void rangeAritiesMatchInterpreter() {
+    final var source =
+        """
+        program rangetest;
+        import io;
+        import std;
+
+        io:println(std:range(5));
+        io:println(std:range(2, 8));
+        io:println(std:range(2, 8, 2));
+        io:println(std:range(10, 0, -2));
         """;
     assertEquals(interpret(source), compileAndRun(source));
   }
@@ -189,11 +208,74 @@ class JvmCodeGeneratorTests {
     return captured(() -> SafeRuntime.run(source, "test.safe", List.of(), false, List.of()));
   }
 
-  private static String compileAndRun(final String source) {
+  @Test
+  void concurrentExecutionsAreIsolated() throws Exception {
+    // Two programs share a recursive `sum` with a decreases measure. Run concurrently on separate
+    // threads: per-thread runtime state (measure stacks, output) must stay isolated — otherwise the
+    // interleaved decreases checks would trap or the captured output would be corrupted.
+    final var bytesA = compile(concurrentProgram("proga", 10));
+    final var bytesB = compile(concurrentProgram("progb", 20));
+    final var outA = new StringWriter();
+    final var outB = new StringWriter();
+    final var errorA = new AtomicReference<Throwable>();
+    final var errorB = new AtomicReference<Throwable>();
+    final var start = new CountDownLatch(1);
+
+    final var threadA = new Thread(() -> runConcurrently(bytesA, outA, start, errorA));
+    final var threadB = new Thread(() -> runConcurrently(bytesB, outB, start, errorB));
+    threadA.start();
+    threadB.start();
+    start.countDown();
+    threadA.join();
+    threadB.join();
+
+    if (errorA.get() != null) {
+      throw new AssertionError("thread A failed", errorA.get());
+    }
+    if (errorB.get() != null) {
+      throw new AssertionError("thread B failed", errorB.get());
+    }
+    assertEquals("55\n".repeat(300), outA.toString());
+    assertEquals("210\n".repeat(300), outB.toString());
+  }
+
+  private static String concurrentProgram(final String name, final int n) {
+    return "program "
+        + name
+        + ";\nimport io;\nimport std;\n"
+        + "int sum(int k) decreases(k) { return if (k <= 0) then 0 else k + sum(k - 1); }\n"
+        + "for i in std:range(300) { io:println(sum("
+        + n
+        + ")); }\n";
+  }
+
+  private static byte[] compile(final String source) {
     final var parsed = SafeRuntime.parse(source, "test.safe", false, List.of());
-    final var bytes =
-        new JvmCodeGenerator("io/safelang/generated/Program", parsed.registry())
-            .generate(parsed.program());
+    return new JvmCodeGenerator("io/safelang/generated/Program", parsed.registry())
+        .generate(parsed.program());
+  }
+
+  private static void runConcurrently(
+      final byte[] bytes,
+      final StringWriter out,
+      final CountDownLatch start,
+      final AtomicReference<Throwable> error) {
+    try {
+      start.await();
+      JvmRuntime.setOutput(out);
+      try {
+        final var loaded = new BytesLoader().define("io.safelang.generated.Program", bytes);
+        loaded.getMethod("main", String[].class).invoke(null, (Object) new String[0]);
+      } finally {
+        JvmRuntime.clearOutput();
+      }
+    } catch (final Throwable failure) {
+      error.set(failure);
+    }
+  }
+
+  private static String compileAndRun(final String source) {
+    final var bytes = compile(source);
     return captured(
         () -> {
           try {

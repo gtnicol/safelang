@@ -67,12 +67,13 @@ tests/*.bak
 tests/*.clean
 stdlib/*.safeb
 
-# Compiled executables (no extension) produced by the native backend
-examples/hello
-examples/enums
-examples/fibonacci
-examples/contracts
-examples/tour
+# Compiled executables (no extension) and other generated outputs produced by the native backend.
+# Under examples/, only source files are tracked (*.safe, *.safea); everything else (native
+# binaries, generated *.c/*.safeb/*.wasm/*.jar) is ignored consistently.
+examples/*
+!examples/*.safe
+!examples/*.safea
+!examples/*/
 tests/test_dbm
 tests/test_queue
 benchmarks/bench_btree

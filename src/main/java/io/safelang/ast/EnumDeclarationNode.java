@@ -12,8 +12,8 @@ public record EnumDeclarationNode(
     implements ASTNode {
 
   public EnumDeclarationNode {
-    parameters = parameters != null ? parameters : new ArrayList<>();
-    variants = variants != null ? variants : new ArrayList<>();
+    parameters = parameters != null ? List.copyOf(parameters) : List.of();
+    variants = variants != null ? List.copyOf(variants) : List.of();
   }
 
   @Override

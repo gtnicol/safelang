@@ -91,7 +91,12 @@ final class CBuiltinResolver {
         }
       case "range":
         {
-          if (arguments.size() >= 2) {
+          if (arguments.size() >= 3) {
+            final var start = context.emit(arguments.getFirst());
+            final var end = context.emit(arguments.get(1));
+            final var step = context.emit(arguments.get(2));
+            return "safe_range_step(" + start + ", " + end + ", " + step + ")";
+          } else if (arguments.size() == 2) {
             final var start = context.emit(arguments.getFirst());
             final var end = context.emit(arguments.get(1));
             return "safe_range(" + start + ", " + end + ")";

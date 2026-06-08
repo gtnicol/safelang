@@ -6,7 +6,7 @@
 
     <groupId>io.safelang</groupId>
     <artifactId>safe-lang</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <packaging>jar</packaging>
 
     <name>SAFE Language</name>
@@ -15,7 +15,7 @@
         Ships as a library containing a JSR-223 (javax.script) ScriptEngine registered under the name "safe",
         plus interpreter, bytecode compiler/VM, native-C code generator, and WebAssembly backend.
     </description>
-    <url>https://github.com/REPLACE_ME/safe-lang</url>
+    <url>https://github.com/gtnicol/safelang</url>
 
     <licenses>
         <license>
@@ -33,10 +33,9 @@
     </developers>
 
     <scm>
-        <!-- TODO: replace with the real GitHub URL once the repo is pushed. -->
-        <connection>scm:git:https://github.com/REPLACE_ME/safe-lang.git</connection>
-        <developerConnection>scm:git:ssh://git@github.com/REPLACE_ME/safe-lang.git</developerConnection>
-        <url>https://github.com/REPLACE_ME/safe-lang</url>
+        <connection>scm:git:https://github.com/gtnicol/safelang.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/gtnicol/safelang.git</developerConnection>
+        <url>https://github.com/gtnicol/safelang</url>
         <tag>HEAD</tag>
     </scm>
 

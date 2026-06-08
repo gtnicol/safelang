@@ -1,7 +1,13 @@
 package io.safelang.runtime;
 
-import io.safelang.ast.*;
-import java.util.*;
+import io.safelang.ast.FunctionDeclarationNode;
+import io.safelang.ast.ParameterNode;
+import io.safelang.ast.TypeNode;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 public final class BuiltinRegistry {
 
@@ -252,7 +258,7 @@ public final class BuiltinRegistry {
         3,
         "range",
         "std",
-        List.of(param("start", type("int")), param("end", type("int"))),
+        List.of(param("start", type("int")), param("end", type("int")), param("step", type("int"))),
         generic("list", type("int")),
         1);
     register(45, "typeof", "std", List.of(param("x", variable("T"))), type("string"));

@@ -8,7 +8,7 @@ public record CaseExpressionNode(
     implements ASTNode {
 
   public CaseExpressionNode {
-    branches = branches != null ? branches : new ArrayList<>();
+    branches = branches != null ? List.copyOf(branches) : List.of();
   }
 
   public boolean hasFallback() {

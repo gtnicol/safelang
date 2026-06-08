@@ -6,7 +6,7 @@ public record EnumPatternNode(int line, int column, String variant, List<String>
     implements ASTNode {
 
   public EnumPatternNode {
-    bindings = bindings != null ? new ArrayList<>(bindings) : new ArrayList<>();
+    bindings = bindings != null ? List.copyOf(bindings) : List.of();
   }
 
   public boolean hasBindings() {

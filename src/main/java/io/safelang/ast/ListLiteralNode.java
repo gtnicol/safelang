@@ -6,7 +6,7 @@ import java.util.*;
 public record ListLiteralNode(int line, int column, List<ASTNode> elements) implements ASTNode {
 
   public ListLiteralNode {
-    elements = elements != null ? new ArrayList<>(elements) : new ArrayList<>();
+    elements = elements != null ? List.copyOf(elements) : List.of();
   }
 
   @Override

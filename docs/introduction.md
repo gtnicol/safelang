@@ -29,7 +29,7 @@ modules — here we import `io` for console output. Functions from imported modu
 ### Running Your Program
 
 > **CLI invocation.** Examples below use a short `safe <subcommand>` form. The actual command is
-> `java -jar target/safe-lang-1.0-SNAPSHOT.jar <subcommand>` after `mvn clean package -DskipTests`; alias
+> `java -jar target/safe-lang-1.0.0-cli.jar <subcommand>` after `mvn clean package -DskipTests`; alias
 > `safe` to that in your shell if you want the short form to work literally.
 
 ```bash

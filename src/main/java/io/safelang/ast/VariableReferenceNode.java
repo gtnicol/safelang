@@ -7,7 +7,7 @@ public record VariableReferenceNode(int line, int column, String prefix, List<St
     implements ASTNode {
 
   public VariableReferenceNode {
-    parts = parts != null ? new ArrayList<>(parts) : new ArrayList<>();
+    parts = parts != null ? List.copyOf(parts) : List.of();
   }
 
   public VariableReferenceNode(final int line, final int column, final List<String> parts) {

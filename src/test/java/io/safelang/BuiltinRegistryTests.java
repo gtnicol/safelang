@@ -128,7 +128,7 @@ class BuiltinRegistryTests {
   @Test
   void rangeIsVariadic() {
     final var id = BuiltinRegistry.id("range");
-    assertEquals(2, BuiltinRegistry.arity(id));
+    assertEquals(3, BuiltinRegistry.arity(id));
     assertEquals(1, BuiltinRegistry.minimum(id));
   }
 

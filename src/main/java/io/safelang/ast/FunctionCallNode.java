@@ -7,7 +7,7 @@ public record FunctionCallNode(
     int line, int column, String prefix, String name, List<ASTNode> arguments) implements ASTNode {
 
   public FunctionCallNode {
-    arguments = arguments != null ? new ArrayList<>(arguments) : new ArrayList<>();
+    arguments = arguments != null ? List.copyOf(arguments) : List.of();
   }
 
   public boolean hasPrefix() {

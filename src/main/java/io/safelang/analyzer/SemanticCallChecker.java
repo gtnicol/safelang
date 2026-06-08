@@ -9,6 +9,10 @@ import java.util.Set;
 
 final class SemanticCallChecker {
 
+  private static final Set<String> RESOURCE_MODULES = Set.of("file", "binary");
+  private static final Set<String> OPEN_NAMES = Set.of("open", "fileopen", "bopen");
+  private static final Set<String> CLOSE_NAMES = Set.of("close", "fileclose", "bclose");
+
   private final TypeResolver resolver;
   private final ModuleRegistry registry;
   private final Map<String, FunctionDeclarationNode> functions;
@@ -120,13 +124,11 @@ final class SemanticCallChecker {
 
   private void track(final FunctionCallNode node, final String name) {
     if (hooks.current() != null) {
-      final var qualified = node.hasPrefix() && Set.of("file", "binary").contains(node.prefix());
-      if (Set.of("open", "fileopen", "bopen").contains(name)
-          && (qualified || BuiltinRegistry.isBuiltin(name))) {
+      final var qualified = node.hasPrefix() && RESOURCE_MODULES.contains(node.prefix());
+      if (OPEN_NAMES.contains(name) && (qualified || BuiltinRegistry.isBuiltin(name))) {
         hooks.open();
       }
-      if (Set.of("close", "fileclose", "bclose").contains(name)
-          && (qualified || BuiltinRegistry.isBuiltin(name))) {
+      if (CLOSE_NAMES.contains(name) && (qualified || BuiltinRegistry.isBuiltin(name))) {
         hooks.close();
       }
     }
@@ -167,6 +169,27 @@ final class SemanticCallChecker {
       final var variant = findVariant(module, name);
       if (variant != null) {
         variant(node, name, variant);
+        return;
+      }
+      // Qualified call to a module-owned builtin with no SAFE trampoline (e.g. std:range):
+      // resolve directly against the registry, mirroring the unqualified builtin path.
+      final var builtin = BuiltinRegistry.id(name);
+      if (builtin >= 0 && module.equals(BuiltinRegistry.module(name))) {
+        if (!arity(
+            BuiltinRegistry.arity(builtin),
+            BuiltinRegistry.minimum(builtin),
+            node.arguments().size(),
+            "Function '" + module + ":" + name + "'",
+            node)) {
+          return;
+        }
+        if (hooks.strict() && !BuiltinRegistry.isStrictAllowed(name)) {
+          hooks.error("Impure builtin '" + name + "' not allowed in strict mode", node);
+        }
+        final var signature = BuiltinRegistry.signature(name);
+        if (signature != null) {
+          resolver.validateArguments(signature, name, node);
+        }
         return;
       }
       hooks.error("Undefined function '" + name + "' in module '" + module + "'", node);

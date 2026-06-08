@@ -1,6 +1,7 @@
 package io.safelang.interpreter;
 
 import io.safelang.ModuleRegistry;
+import io.safelang.SAFEException;
 import io.safelang.ast.*;
 import io.safelang.interpreter.builtins.*;
 import io.safelang.runtime.*;
@@ -131,22 +132,11 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
       enter(scope);
       try {
         final var measure = declaration.decreases().accept(this).asInt();
-        final var stack = measures.computeIfAbsent(displayName, k -> new ArrayDeque<>());
-        if (measure < 0) {
-          throw new InterpreterException(
-              "Decreases measure must be non-negative for: " + displayName);
+        try {
+          Measures.push(measures, displayName, measure);
+        } catch (final SAFEException error) {
+          throw new InterpreterException(error.getMessage());
         }
-        if (!stack.isEmpty() && measure >= stack.peek()) {
-          throw new InterpreterException(
-              "Decreases clause not satisfied for: "
-                  + displayName
-                  + " (measure "
-                  + measure
-                  + " >= previous "
-                  + stack.peek()
-                  + ")");
-        }
-        stack.push(measure);
       } finally {
         exit();
       }
@@ -182,7 +172,7 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
       }
     } finally {
       if (declaration.hasDecreases()) {
-        measures.get(displayName).pop();
+        Measures.pop(measures, displayName);
       }
     }
 
@@ -401,32 +391,11 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
     final var start = node.start().accept(this).asInt();
     final var end = node.end().accept(this).asInt();
     final var increment = node.hasStep() ? node.step().accept(this).asInt() : 1L;
-    if (increment == 0) {
-      throw new InterpreterException("Range step cannot be zero");
+    try {
+      return SAFEValue.ofList(RangeSemantics.build(start, end, increment));
+    } catch (final SAFEException error) {
+      throw new InterpreterException(error.getMessage());
     }
-    // Detect empty range (opposite directions)
-    if ((increment > 0 && start > end) || (increment < 0 && start < end)) {
-      return SAFEValue.ofList(new ArrayList<>());
-    }
-    // Overflow-safe size calculation
-    final var range = end / increment - start / increment;
-    final var size = Math.abs(range) + 1;
-    if (size > SAFEValue.MAX_LIST_SIZE || size < 0) {
-      throw new InterpreterException("range size exceeds maximum of " + SAFEValue.MAX_LIST_SIZE);
-    }
-    final var list = new ArrayList<SAFEValue>();
-    if (increment > 0) {
-      for (long i = start; i <= end; i += increment) {
-        list.add(SAFEValue.ofInt(i));
-        if (i > 0 && end - i < increment) break; // would overflow
-      }
-    } else {
-      for (long i = start; i >= end; i += increment) {
-        list.add(SAFEValue.ofInt(i));
-        if (i < 0 && end - i > increment) break; // would overflow
-      }
-    }
-    return SAFEValue.ofList(list);
   }
 
   @Override
@@ -1248,6 +1217,11 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
           variantArgs.add(arg.accept(this));
         }
         return SAFEValue.ofEnum(match.enumName(), name, variantArgs);
+      }
+      // Qualified call to a module-owned builtin with no SAFE trampoline (e.g. std:range):
+      // dispatch directly to the builtin, mirroring the unqualified path.
+      if (isBuiltin(name) && module.equals(BuiltinRegistry.module(name))) {
+        return builtin(name, node.arguments());
       }
       throw new InterpreterException(
           "Undefined function '" + name + "' in module '" + module + "'");

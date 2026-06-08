@@ -5,7 +5,7 @@ to real `.class` bytecode and packages it, together with the SAFE runtime, into 
 runs with `java -jar program.jar` and no classpath.
 
 > **CLI invocation.** Examples use a short `safe <subcommand>` form for readability. The actual command is
-> `java -jar target/safe-lang-1.0-SNAPSHOT.jar <subcommand>`; alias `safe` to that in your shell if you want the
+> `java -jar target/safe-lang-1.0.0-cli.jar <subcommand>`; alias `safe` to that in your shell if you want the
 > short form to work literally.
 
 ## Commands

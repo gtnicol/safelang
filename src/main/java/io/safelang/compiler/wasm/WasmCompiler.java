@@ -1251,6 +1251,16 @@ public final class WasmCompiler extends AbstractASTVisitor<SymbolKey> {
       final var qualified = node.prefix() + "$" + node.name();
       final var imported = state.moduleImports.get(qualified);
       if (imported == null) {
+        // Qualified module-owned builtin with no SAFE trampoline (e.g. std:range): dispatch to
+        // the builtin stub, mirroring the unqualified builtin path. Args are already on the stack.
+        final var stub = state.stubs.get(node.name());
+        if (stub != null
+            && BuiltinRegistry.isBuiltin(node.name())
+            && node.prefix().equals(BuiltinRegistry.module(node.name()))) {
+          padArgs(node.arguments().size(), state.stubArities.get(node.name()));
+          current.emitCall(stub);
+          return null;
+        }
         throw new CompilerException(
             "WASM backend: unresolved module call '" + node.prefix() + ":" + node.name() + "'");
       }

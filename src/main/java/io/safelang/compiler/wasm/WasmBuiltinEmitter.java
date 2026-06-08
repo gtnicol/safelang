@@ -883,12 +883,30 @@ final class WasmBuiltinEmitter {
     module.addCode(index, function.encode(module));
   }
 
+  // range(end) | range(start, end) | range(start, end, step). Locals 0/1/2 carry the (VOID-padded)
+  // arguments. End-exclusive, Python-style; step may be negative for a descending range.
   private void emitRange(final WasmFunction function) {
     final var start = function.addLocal(TYPE_I64);
-    final var count = function.addLocal(TYPE_I64);
+    final var end = function.addLocal(TYPE_I64);
+    final var step = function.addLocal(TYPE_I64);
     final var index = function.addLocal(TYPE_I64);
     final var list = function.addLocal(TYPE_I64);
 
+    // step: local 2 VOID -> default 1, else untag.
+    function.emitLocalGet(2);
+    function.emitCall(runtime.tag);
+    function.emitI32Const(WasmRuntime.TAG_VOID);
+    function.emit(I32_EQ);
+    function.emitIf(TYPE_VOID);
+    function.emitI64Const(1);
+    function.emitLocalSet(step);
+    function.emit(ELSE);
+    function.emitLocalGet(2);
+    function.emitCall(runtime.untagInt);
+    function.emitLocalSet(step);
+    function.emit(END);
+
+    // start/end: local 1 VOID -> 1-arg (start=0, end=arg0); else start=arg0, end=arg1.
     function.emitLocalGet(1);
     function.emitCall(runtime.tag);
     function.emitI32Const(WasmRuntime.TAG_VOID);
@@ -898,14 +916,14 @@ final class WasmBuiltinEmitter {
     function.emitLocalSet(start);
     function.emitLocalGet(0);
     function.emitCall(runtime.untagInt);
-    function.emitLocalSet(count);
+    function.emitLocalSet(end);
     function.emit(ELSE);
     function.emitLocalGet(0);
     function.emitCall(runtime.untagInt);
     function.emitLocalSet(start);
     function.emitLocalGet(1);
     function.emitCall(runtime.untagInt);
-    function.emitLocalSet(count);
+    function.emitLocalSet(end);
     function.emit(END);
 
     function.emitCall(support.listCreate());
@@ -913,11 +931,27 @@ final class WasmBuiltinEmitter {
     function.emitLocalGet(start);
     function.emitLocalSet(index);
 
+    // step == 0 would spin forever for a descending start; guard it (the interpreter, bytecode and
+    // JVM backends trap on a zero step, so an empty list is the safe WASM-side behavior).
+    function.emitLocalGet(step);
+    function.emitI64Const(0);
+    function.emit(I64_NE);
+    function.emitIf(TYPE_VOID);
     function.emitBlock(TYPE_VOID);
     function.emitLoop(TYPE_VOID);
+    // done = step > 0 ? index >= end : index <= end
+    function.emitLocalGet(step);
+    function.emitI64Const(0);
+    function.emit(I64_GT_S);
+    function.emitIf(TYPE_I32);
     function.emitLocalGet(index);
-    function.emitLocalGet(count);
+    function.emitLocalGet(end);
     function.emit(I64_GE_S);
+    function.emit(ELSE);
+    function.emitLocalGet(index);
+    function.emitLocalGet(end);
+    function.emit(I64_LE_S);
+    function.emit(END);
     function.emitBrIf(1);
     function.emitLocalGet(list);
     function.emitLocalGet(index);
@@ -925,10 +959,11 @@ final class WasmBuiltinEmitter {
     function.emitCall(support.listAppend());
     function.emitLocalSet(list);
     function.emitLocalGet(index);
-    function.emitI64Const(1);
+    function.emitLocalGet(step);
     function.emit(I64_ADD);
     function.emitLocalSet(index);
     function.emitBr(0);
+    function.emit(END);
     function.emit(END);
     function.emit(END);
 

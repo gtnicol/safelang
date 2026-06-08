@@ -1353,14 +1353,35 @@ static inline SAFEList* safe_range(int64_t start, int64_t end) {
     return list;
 }
 
-static inline SAFEList* safe_range_inclusive(int64_t start, int64_t end) {
+#define SAFE_MAX_LIST_SIZE 10000000
+
+static inline void safe_range_overflow(void) {
+    fprintf(stderr, "range size exceeds maximum of %d\n", SAFE_MAX_LIST_SIZE);
+    exit(1);
+}
+
+/* Guarded range construction, mirroring runtime/RangeSemantics: cap at SAFE_MAX_LIST_SIZE
+ * and detect signed overflow on the step so an extreme span traps instead of wrapping. */
+static inline SAFEList* safe_range_step(int64_t start, int64_t end, int64_t step) {
+    if (step == 0) { fprintf(stderr, "Range step cannot be zero\n"); exit(1); }
     SAFEList* list = safe_list_new();
-    for (int64_t i = start; i <= end; i++) {
+    if ((step > 0 && start > end) || (step < 0 && start < end)) return list;
+    int64_t size = 0;
+    for (int64_t i = start; (step > 0) ? (i <= end) : (i >= end); ) {
+        if (size >= SAFE_MAX_LIST_SIZE) safe_range_overflow();
         int64_t* val = (int64_t*)safe_arena_alloc(sizeof(int64_t));
         *val = i;
         safe_list_append(list, val);
+        size++;
+        int64_t next;
+        if (__builtin_add_overflow(i, step, &next)) break;
+        i = next;
     }
     return list;
+}
+
+static inline SAFEList* safe_range_inclusive(int64_t start, int64_t end) {
+    return safe_range_step(start, end, 1);
 }
 
 /* ===== Time Function ===== */

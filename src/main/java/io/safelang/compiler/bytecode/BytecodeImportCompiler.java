@@ -28,8 +28,13 @@ final class BytecodeImportCompiler {
       for (final var declaration : source.declarations()) {
         register(module, selected, declaration);
       }
-      for (final var constant : registry.constants(module).values()) {
-        global(module, constant);
+      // Register every module constant (public and private) as a mangled global — a module's
+      // own functions reference its private constants. Cross-module visibility is enforced by
+      // the registry's public-only export maps, not here. Mirrors function compilation below.
+      for (final var declaration : source.declarations()) {
+        if (declaration instanceof VariableDeclarationNode constant && constant.isConstant()) {
+          global(module, constant);
+        }
       }
       for (final var declaration : source.declarations()) {
         if (declaration instanceof FunctionDeclarationNode function) {

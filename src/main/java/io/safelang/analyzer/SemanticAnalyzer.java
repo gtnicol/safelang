@@ -1,18 +1,67 @@
 package io.safelang.analyzer;
 
 import io.safelang.ModuleRegistry;
-import io.safelang.ast.*;
+import io.safelang.ast.ASTNode;
+import io.safelang.ast.ASTVisitor;
+import io.safelang.ast.AssertNode;
+import io.safelang.ast.AssignmentNode;
+import io.safelang.ast.BinaryExpressionNode;
+import io.safelang.ast.CaseBranchNode;
+import io.safelang.ast.CaseExpressionNode;
+import io.safelang.ast.DestructureNode;
+import io.safelang.ast.DoExpressionNode;
+import io.safelang.ast.EnumDeclarationNode;
+import io.safelang.ast.EnumPatternNode;
+import io.safelang.ast.EnumVariantNode;
+import io.safelang.ast.ExpressionStatementNode;
+import io.safelang.ast.FieldAccessNode;
+import io.safelang.ast.FieldAssignmentNode;
+import io.safelang.ast.FieldDeclarationNode;
+import io.safelang.ast.ForStatementNode;
+import io.safelang.ast.FunctionCallNode;
+import io.safelang.ast.FunctionDeclarationNode;
+import io.safelang.ast.IfExpressionNode;
+import io.safelang.ast.ImportNode;
+import io.safelang.ast.IndexAccessNode;
+import io.safelang.ast.IndexAssignmentNode;
+import io.safelang.ast.LambdaNode;
+import io.safelang.ast.ListLiteralNode;
+import io.safelang.ast.LiteralNode;
+import io.safelang.ast.MapEntryNode;
+import io.safelang.ast.MapLiteralNode;
+import io.safelang.ast.ObjectCreationNode;
+import io.safelang.ast.ParameterNode;
+import io.safelang.ast.ProgramNode;
+import io.safelang.ast.RangeNode;
+import io.safelang.ast.ReturnNode;
+import io.safelang.ast.SetLiteralNode;
+import io.safelang.ast.StringInterpolationNode;
+import io.safelang.ast.TraversingASTVisitor;
+import io.safelang.ast.TupleLiteralNode;
+import io.safelang.ast.TypeAliasNode;
+import io.safelang.ast.TypeDeclarationNode;
+import io.safelang.ast.TypeNode;
+import io.safelang.ast.UnaryExpressionNode;
+import io.safelang.ast.VariableDeclarationNode;
+import io.safelang.ast.VariableReferenceNode;
+import io.safelang.ast.WhileStatementNode;
 import io.safelang.runtime.BuiltinRegistry;
 import io.safelang.runtime.SAFEValue;
-import java.util.*;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 public class SemanticAnalyzer implements ASTVisitor<Void> {
 
   private static final Set<String> NONDETERMINISTIC =
       Set.of("OS", "ARCH", "PLATFORM", "OS_VERSION");
-  private static final Set<String> RESOURCE_MODULES = Set.of("file", "binary");
-  private static final Set<String> OPEN_NAMES = Set.of("open", "fileopen", "bopen");
-  private static final Set<String> CLOSE_NAMES = Set.of("close", "fileclose", "bclose");
   private final Map<String, FunctionDeclarationNode> functions = new HashMap<>();
   private final Map<String, TypeDeclarationNode> types = new HashMap<>();
   private final Map<String, EnumDeclarationNode> enums = new HashMap<>();
@@ -707,12 +756,14 @@ public class SemanticAnalyzer implements ASTVisitor<Void> {
     if (bound != null && !"int".equals(bound.name()) && !"uint".equals(bound.name())) {
       error("While bound must be int or uint, got " + bound.fullName(), node);
     }
-    // Collect variables referenced in the bound expression
-    final var protected_ = new HashSet<String>();
-    collect(node.bound(), protected_);
-    // Check that none of those variables are assigned inside the loop body
+    // Collect variables referenced anywhere in the bound expression, then check that none of
+    // them are assigned inside the loop body — the bound is evaluated once, so mutating an input
+    // would silently change the termination guarantee.
+    final var bounded = new HashSet<String>();
+    node.bound().accept(new BoundCollector(bounded));
+    final var checker = new BoundMutationChecker(bounded, node);
     for (final var statement : node.body()) {
-      immutable(statement, protected_, node);
+      statement.accept(checker);
     }
     nested();
     try {
@@ -733,126 +784,72 @@ public class SemanticAnalyzer implements ASTVisitor<Void> {
     return new SemanticBinaryChecker(resolver, this::error);
   }
 
-  private void collect(final ASTNode node, final Set<String> names) {
-    if (node == null) return;
-    switch (node) {
-      case VariableReferenceNode reference -> {
-        if (!reference.hasPrefix() && reference.parts().size() == 1) {
-          names.add(reference.parts().get(0));
-        }
+  /**
+   * Collects every unqualified, single-part variable name referenced anywhere in a {@code while}
+   * bound expression. By extending {@link TraversingASTVisitor} it descends into every expression
+   * form (if/case/do/lambda, list/map/set literals, interpolation) automatically — a hand-rolled
+   * switch silently skipped the newer forms.
+   */
+  private static final class BoundCollector extends TraversingASTVisitor<Void> {
+    private final Set<String> names;
+
+    BoundCollector(final Set<String> names) {
+      this.names = names;
+    }
+
+    @Override
+    public Void visitVariableReference(final VariableReferenceNode node) {
+      if (!node.hasPrefix() && node.parts().size() == 1) {
+        names.add(node.parts().get(0));
       }
-      case BinaryExpressionNode binary -> {
-        collect(binary.left(), names);
-        collect(binary.right(), names);
-      }
-      case UnaryExpressionNode unary -> {
-        collect(unary.operand(), names);
-      }
-      case FunctionCallNode call -> {
-        for (final var argument : call.arguments()) {
-          collect(argument, names);
-        }
-      }
-      case FieldAccessNode field -> {
-        collect(field.receiver(), names);
-      }
-      case IndexAccessNode access -> {
-        collect(access.container(), names);
-        collect(access.index(), names);
-      }
-      default -> {}
+      return null;
     }
   }
 
-  private void immutable(final ASTNode node, final Set<String> protected_, final ASTNode origin) {
-    if (node == null) return;
-    switch (node) {
-      case AssignmentNode assignment -> {
-        final var target = assignment.parts().get(0);
-        if (protected_.contains(target)) {
-          error(
-              "Cannot assign to '"
-                  + target
-                  + "' inside while loop — it is used in the bound expression",
-              origin);
-        }
-        immutable(assignment.value(), protected_, origin);
+  /**
+   * Flags any assignment, index assignment, or destructuring inside a {@code while} body whose
+   * target is a name used in the bound. Traversal of every other node (including nested loops and
+   * the bodies of if/case/do expressions) comes from {@link TraversingASTVisitor}.
+   */
+  private final class BoundMutationChecker extends TraversingASTVisitor<Void> {
+    private final Set<String> bounded;
+    private final ASTNode origin;
+
+    BoundMutationChecker(final Set<String> bounded, final ASTNode origin) {
+      this.bounded = bounded;
+      this.origin = origin;
+    }
+
+    private void check(final String name) {
+      if (bounded.contains(name)) {
+        error(
+            "Cannot assign to '"
+                + name
+                + "' inside while loop — it is used in the bound expression",
+            origin);
       }
-      case ExpressionStatementNode wrapper -> {
-        immutable(wrapper.expression(), protected_, origin);
+    }
+
+    @Override
+    public Void visitAssignment(final AssignmentNode node) {
+      check(node.parts().get(0));
+      return super.visitAssignment(node);
+    }
+
+    @Override
+    public Void visitIndexAssignment(final IndexAssignmentNode node) {
+      if (node.container() instanceof VariableReferenceNode reference) {
+        check(reference.parts().get(0));
       }
-      case VariableDeclarationNode declaration -> {
-        if (declaration.hasInitializer()) {
-          immutable(declaration.initializer(), protected_, origin);
-        }
+      return super.visitIndexAssignment(node);
+    }
+
+    @Override
+    public Void visitDestructure(final DestructureNode node) {
+      for (final var name : node.names()) {
+        check(name);
       }
-      case ForStatementNode loop -> {
-        for (final var statement : loop.body()) {
-          immutable(statement, protected_, origin);
-        }
-      }
-      case WhileStatementNode loop -> {
-        for (final var statement : loop.body()) {
-          immutable(statement, protected_, origin);
-        }
-      }
-      case IfExpressionNode conditional -> {
-        immutable(conditional.then(), protected_, origin);
-        if (conditional.hasOtherwise()) {
-          immutable(conditional.otherwise(), protected_, origin);
-        }
-      }
-      case CaseExpressionNode match -> {
-        for (final var branch : match.branches()) {
-          immutable(branch.result(), protected_, origin);
-          if (branch.hasGuard()) {
-            immutable(branch.guard(), protected_, origin);
-          }
-        }
-        if (match.hasFallback()) {
-          immutable(match.fallback(), protected_, origin);
-        }
-      }
-      case DoExpressionNode block -> {
-        for (final var statement : block.statements()) {
-          immutable(statement, protected_, origin);
-        }
-        immutable(block.expression(), protected_, origin);
-      }
-      case FunctionCallNode call -> {
-        for (final var argument : call.arguments()) {
-          immutable(argument, protected_, origin);
-        }
-      }
-      case IndexAssignmentNode assignment -> {
-        if (assignment.container() instanceof VariableReferenceNode reference) {
-          final var target = reference.parts().get(0);
-          if (protected_.contains(target)) {
-            error(
-                "Cannot assign to '"
-                    + target
-                    + "' inside while loop — it is used in the bound expression",
-                origin);
-          }
-        }
-        for (final var index : assignment.indices()) {
-          immutable(index, protected_, origin);
-        }
-        immutable(assignment.value(), protected_, origin);
-      }
-      case DestructureNode destructure -> {
-        for (final var name : destructure.names()) {
-          if (protected_.contains(name)) {
-            error(
-                "Cannot assign to '"
-                    + name
-                    + "' inside while loop — it is used in the bound expression",
-                origin);
-          }
-        }
-        immutable(destructure.initializer(), protected_, origin);
-      }
-      default -> {}
+      return super.visitDestructure(node);
     }
   }
 
@@ -1082,6 +1079,29 @@ public class SemanticAnalyzer implements ASTVisitor<Void> {
     return null;
   }
 
+  /**
+   * True when {@code module} declares a constant named {@code member} that is not {@code public}.
+   * Qualified access to such a constant is rejected — the registry's export maps already hide it
+   * from cross-module function/type/enum resolution, so this closes the same gap for constants.
+   */
+  private boolean privateConstant(final String module, final String member) {
+    if (member == null || registry == null || !registry.has(module)) {
+      return false;
+    }
+    final var program = registry.program(module);
+    if (program == null) {
+      return false;
+    }
+    for (final var declaration : program.declarations()) {
+      if (declaration instanceof VariableDeclarationNode constant
+          && constant.isConstant()
+          && constant.name().equals(member)) {
+        return !constant.isPublic();
+      }
+    }
+    return false;
+  }
+
   @Override
   public Void visitVariableReference(final VariableReferenceNode node) {
     if (node.hasPrefix()) {
@@ -1098,6 +1118,11 @@ public class SemanticAnalyzer implements ASTVisitor<Void> {
                   + "' was not included in selective import of module '"
                   + node.prefix()
                   + "'",
+              node);
+        }
+        if (privateConstant(node.prefix(), target)) {
+          error(
+              "Cannot access private constant '" + target + "' of module '" + node.prefix() + "'",
               node);
         }
       }
@@ -1143,6 +1168,9 @@ public class SemanticAnalyzer implements ASTVisitor<Void> {
                 + name
                 + "'",
             node);
+      }
+      if (privateConstant(name, target)) {
+        error("Cannot access private constant '" + target + "' of module '" + name + "'", node);
       }
     }
     // Validate field chain for multi-part references (e.g., p.x.y)

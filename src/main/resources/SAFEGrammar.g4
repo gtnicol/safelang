@@ -92,7 +92,7 @@ declaration
     ;
 
 constDeclaration
-    : CONST type id=IDENTIFIER '=' expression ';'
+    : visibility? CONST type id=IDENTIFIER '=' expression ';'
     ;
 
 // --- Type alias --------------------------------------------------------------

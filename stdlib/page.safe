@@ -1,8 +1,8 @@
 module page;
 import binary;
 
-const int SIZE = 4096;
-const int HEADER = 16;
+public const int SIZE = 4096;
+public const int HEADER = 16;
 
 public type Page {
     public int number;
@@ -50,6 +50,6 @@ public Page writedata(Page p, int offset, bytes value) {
 }
 
 // Page type tags
-const int LEAF = 1;
-const int INTERNAL = 2;
-const int OVERFLOW = 3;
+public const int LEAF = 1;
+public const int INTERNAL = 2;
+public const int OVERFLOW = 3;

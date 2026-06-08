@@ -280,7 +280,7 @@ class WasmPipelineTests {
               "cfg",
               """
           module cfg;
-          const int ANSWER = 42;
+          public const int ANSWER = 42;
           """));
     }
 

@@ -17,8 +17,8 @@ public record FunctionDeclarationNode(
     implements ASTNode {
 
   public FunctionDeclarationNode {
-    parameters = parameters != null ? parameters : new ArrayList<>();
-    body = body != null ? body : new ArrayList<>();
+    parameters = parameters != null ? List.copyOf(parameters) : List.of();
+    body = body != null ? List.copyOf(body) : List.of();
   }
 
   public FunctionDeclarationNode(

@@ -48,6 +48,34 @@ public final class TestHelper {
     return capture.toString().stripTrailing();
   }
 
+  public static String jvm(final String source) {
+    final var loaded = load(source);
+    final var bytes =
+        io.safelang.compiler.jvm.JvmBackend.classBytes(
+            loaded.program(), loaded.registry(), "io/safelang/generated/Program");
+    final var capture = new StringWriter();
+    io.safelang.compiler.jvm.JvmRuntime.setOutput(capture);
+    try {
+      final var generated = new BytesLoader().define("io.safelang.generated.Program", bytes);
+      generated.getMethod("main", String[].class).invoke(null, (Object) new String[0]);
+    } catch (final ReflectiveOperationException exception) {
+      final var cause = exception.getCause() != null ? exception.getCause() : exception;
+      if (cause instanceof RuntimeException runtime) {
+        throw runtime;
+      }
+      throw new RuntimeException(cause);
+    } finally {
+      io.safelang.compiler.jvm.JvmRuntime.clearOutput();
+    }
+    return capture.toString().stripTrailing();
+  }
+
+  private static final class BytesLoader extends ClassLoader {
+    Class<?> define(final String name, final byte[] bytes) {
+      return defineClass(name, bytes, 0, bytes.length);
+    }
+  }
+
   public static String wasm(final String source) throws Exception {
     final var loaded = load(source);
     final var pipeline = new io.safelang.compiler.wasm.WasmPipeline(loaded.registry());

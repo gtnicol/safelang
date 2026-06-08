@@ -8,7 +8,7 @@ public record ForStatementNode(
     implements ASTNode {
 
   public ForStatementNode {
-    body = body != null ? new ArrayList<>(body) : new ArrayList<>();
+    body = body != null ? List.copyOf(body) : List.of();
   }
 
   @Override

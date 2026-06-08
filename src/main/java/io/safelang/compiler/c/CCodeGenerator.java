@@ -677,12 +677,6 @@ public class CCodeGenerator implements ASTVisitor<String> {
       // call site — balances C's implicit struct-copy on arg pass.
       emitParamStructFieldReleases(builder, params);
 
-      // Pop decreases stack on fallthrough (no explicit return)
-      if (function.hasDecreases()) {
-        indent(builder);
-        builder.append("__decreases_stack_").append(name).append(".sp--;\n");
-      }
-
       // Decrement recursion depth on fallthrough
       indent(builder);
       builder.append("__safe_recursion_depth--;\n");
@@ -692,6 +686,13 @@ public class CCodeGenerator implements ASTVisitor<String> {
         builder.append("if (!(");
         builder.append(function.ensures().accept(this));
         builder.append(")) { fprintf(stderr, \"Postcondition failed\\n\"); exit(1); }\n");
+      }
+
+      // Pop decreases stack after ensures (no explicit return), keeping the measure
+      // active through the postcondition exactly as the interpreter does.
+      if (function.hasDecreases()) {
+        indent(builder);
+        builder.append("__decreases_stack_").append(name).append(".sp--;\n");
       }
     } finally {
       frames.pop();
@@ -1004,45 +1005,7 @@ public class CCodeGenerator implements ASTVisitor<String> {
 
     if (node.hasStep()) {
       final var step = node.step().accept(this);
-      // Generate a list via for loop with step, handling positive/negative direction
-      final var builder = new StringBuilder("({\n");
-      indent++;
-      indent(builder);
-      builder.append("SAFEList* __range__ = safe_list_new();\n");
-      indent(builder);
-      builder.append("int64_t __step__ = ").append(step).append(";\n");
-      indent(builder);
-      builder.append("int64_t __start__ = ").append(start).append(";\n");
-      indent(builder);
-      builder.append("int64_t __end__ = ").append(end).append(";\n");
-      indent(builder);
-      builder.append(
-          "if (__step__ == 0) { fprintf(stderr, \"Range step cannot be zero\\n\"); exit(1); }\n");
-      indent(builder);
-      builder.append("{\n");
-      indent++;
-      indent(builder);
-      builder.append(
-          "for (int64_t __i__ = __start__; (__step__ > 0) ? (__i__ <= __end__) : (__i__ >= __end__); __i__ += __step__) {\n");
-      indent++;
-      indent(builder);
-      builder.append("int64_t* __val__ = (int64_t*)safe_arena_alloc(sizeof(int64_t));\n");
-      indent(builder);
-      builder.append("*__val__ = __i__;\n");
-      indent(builder);
-      builder.append("safe_list_append(__range__, __val__);\n");
-      indent--;
-      indent(builder);
-      builder.append("}\n");
-      indent--;
-      indent(builder);
-      builder.append("}\n");
-      indent(builder);
-      builder.append("__range__;\n");
-      indent--;
-      indent(builder);
-      builder.append("})");
-      return builder.toString();
+      return "safe_range_step(" + start + ", " + end + ", " + step + ")";
     }
 
     return "safe_range_inclusive(" + start + ", " + end + ")";
@@ -1384,10 +1347,6 @@ public class CCodeGenerator implements ASTVisitor<String> {
           builder.append(node.expression().accept(this));
         }
         builder.append(";\n");
-        if (decreasing) {
-          indent(builder);
-          builder.append("__decreases_stack_").append(currentFunctionCName()).append(".sp--;\n");
-        }
         if (tracked) {
           indent(builder);
           builder.append("__safe_recursion_depth--;\n");
@@ -1396,6 +1355,10 @@ public class CCodeGenerator implements ASTVisitor<String> {
         builder.append("if (!(");
         builder.append(Objects.requireNonNull(currentFunction()).ensures().accept(this));
         builder.append(")) { fprintf(stderr, \"Postcondition failed\\n\"); exit(1); }\n");
+        if (decreasing) {
+          indent(builder);
+          builder.append("__decreases_stack_").append(currentFunctionCName()).append(".sp--;\n");
+        }
         emitCurrentFunctionBodyLocalReleases(builder, returnedVar);
         emitParamStructFieldReleases(builder, currentFunction().parameters());
         indent(builder);
@@ -1403,10 +1366,6 @@ public class CCodeGenerator implements ASTVisitor<String> {
         return builder.toString();
       }
 
-      if (decreasing) {
-        indent(builder);
-        builder.append("__decreases_stack_").append(currentFunctionCName()).append(".sp--;\n");
-      }
       if (tracked) {
         indent(builder);
         builder.append("__safe_recursion_depth--;\n");
@@ -1415,6 +1374,10 @@ public class CCodeGenerator implements ASTVisitor<String> {
       builder.append("if (!(");
       builder.append(Objects.requireNonNull(currentFunction()).ensures().accept(this));
       builder.append(")) { fprintf(stderr, \"Postcondition failed\\n\"); exit(1); }\n");
+      if (decreasing) {
+        indent(builder);
+        builder.append("__decreases_stack_").append(currentFunctionCName()).append(".sp--;\n");
+      }
       emitCurrentFunctionBodyLocalReleases(builder, returnedVar);
       emitParamStructFieldReleases(builder, currentFunction().parameters());
       indent(builder);

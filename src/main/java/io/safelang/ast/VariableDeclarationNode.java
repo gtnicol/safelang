@@ -1,7 +1,13 @@
 package io.safelang.ast;
 
 public record VariableDeclarationNode(
-    int line, int column, TypeNode type, String name, ASTNode initializer, boolean isConst)
+    int line,
+    int column,
+    TypeNode type,
+    String name,
+    ASTNode initializer,
+    boolean isConst,
+    boolean isPublic)
     implements ASTNode {
 
   public VariableDeclarationNode(
@@ -9,8 +15,18 @@ public record VariableDeclarationNode(
       final int column,
       final TypeNode type,
       final String name,
+      final ASTNode initializer,
+      final boolean isConst) {
+    this(line, column, type, name, initializer, isConst, false);
+  }
+
+  public VariableDeclarationNode(
+      final int line,
+      final int column,
+      final TypeNode type,
+      final String name,
       final ASTNode initializer) {
-    this(line, column, type, name, initializer, false);
+    this(line, column, type, name, initializer, false, false);
   }
 
   public boolean hasInitializer() {

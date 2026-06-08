@@ -7,7 +7,7 @@ public record AssignmentNode(int line, int column, List<String> parts, ASTNode v
     implements ASTNode {
 
   public AssignmentNode {
-    parts = parts != null ? new ArrayList<>(parts) : new ArrayList<>();
+    parts = parts != null ? List.copyOf(parts) : List.of();
   }
 
   @Override

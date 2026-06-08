@@ -1,14 +1,28 @@
 package io.safelang.bytecode;
 
+import io.safelang.SAFEException;
 import io.safelang.runtime.BinaryFileHandle;
 import io.safelang.runtime.BuiltinExecutors;
 import io.safelang.runtime.BuiltinFunction;
 import io.safelang.runtime.BuiltinRegistry;
 import io.safelang.runtime.FileHandle;
+import io.safelang.runtime.Measures;
+import io.safelang.runtime.RangeSemantics;
 import io.safelang.runtime.SAFEValue;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.Scanner;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /** Stack-based virtual machine for executing SAFE bytecode. */
@@ -755,18 +769,11 @@ public class BytecodeVM {
         {
           final var end = pop().asInt();
           final var start = pop().asInt();
-          final var size = (start <= end) ? end - start + 1 : 0;
-          if (size > SAFEValue.MAX_LIST_SIZE) {
-            throw new BytecodeException(
-                "range size " + size + " exceeds maximum of " + SAFEValue.MAX_LIST_SIZE);
+          try {
+            push(SAFEValue.ofList(RangeSemantics.build(start, end, 1)));
+          } catch (final SAFEException error) {
+            throw new BytecodeException(error.getMessage());
           }
-          final var list = new ArrayList<SAFEValue>();
-          if (start <= end) {
-            for (long i = start; i <= end; i++) {
-              list.add(SAFEValue.ofInt(i));
-            }
-          }
-          push(SAFEValue.ofList(list));
           break;
         }
 
@@ -842,37 +849,11 @@ public class BytecodeVM {
           final var increment = pop().asInt();
           final var end = pop().asInt();
           final var start = pop().asInt();
-          if (increment == 0) {
-            throw new BytecodeException("Range step cannot be zero");
-          }
-          // Detect empty range (opposite directions)
-          if ((increment > 0 && start > end) || (increment < 0 && start < end)) {
-            push(SAFEValue.ofList(new ArrayList<>()));
-            break;
-          }
-          // Overflow-safe size calculation using division to avoid wraparound
-          final long size;
           try {
-            size = Math.addExact(Math.abs((end - start) / increment), 1);
-          } catch (ArithmeticException overflow) {
-            throw new BytecodeException("range size overflows");
+            push(SAFEValue.ofList(RangeSemantics.build(start, end, increment)));
+          } catch (final SAFEException error) {
+            throw new BytecodeException(error.getMessage());
           }
-          if (size > SAFEValue.MAX_LIST_SIZE || size < 0) {
-            throw new BytecodeException("range size exceeds maximum of " + SAFEValue.MAX_LIST_SIZE);
-          }
-          final var list = new ArrayList<SAFEValue>();
-          if (increment > 0) {
-            for (long i = start; i <= end; i += increment) {
-              list.add(SAFEValue.ofInt(i));
-              if (i > 0 && end - i < increment) break; // would overflow
-            }
-          } else {
-            for (long i = start; i >= end; i += increment) {
-              list.add(SAFEValue.ofInt(i));
-              if (i < 0 && end - i > increment) break; // would overflow
-            }
-          }
-          push(SAFEValue.ofList(list));
           break;
         }
 
@@ -1040,29 +1021,16 @@ public class BytecodeVM {
   private void decreases(final FunctionDefinition function) {
     if (!function.hasDecreases()) return;
     final var measure = execute(function.decreases(), function.name()).asInt();
-    final var stack = measures.computeIfAbsent(function.name(), k -> new ArrayDeque<>());
-    if (measure < 0) {
-      throw new BytecodeException("Decreases measure must be non-negative for: " + function.name());
+    try {
+      Measures.push(measures, function.name(), measure);
+    } catch (final SAFEException error) {
+      throw new BytecodeException(error.getMessage());
     }
-    if (!stack.isEmpty() && measure >= stack.peek()) {
-      throw new BytecodeException(
-          "Decreases clause not satisfied for: "
-              + function.name()
-              + " (measure "
-              + measure
-              + " >= previous "
-              + stack.peek()
-              + ")");
-    }
-    stack.push(measure);
   }
 
   private void measure(final FunctionDefinition function) {
     if (!function.hasDecreases()) return;
-    final var stack = measures.get(function.name());
-    if (stack != null && !stack.isEmpty()) {
-      stack.pop();
-    }
+    Measures.pop(measures, function.name());
   }
 
   private void add() {

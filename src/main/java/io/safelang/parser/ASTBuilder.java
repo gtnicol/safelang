@@ -81,7 +81,8 @@ public class ASTBuilder extends SAFEGrammarBaseVisitor<ASTNode> {
     final var type = typed(context.type());
     final var name = context.id.getText();
     final var initializer = visit(context.expression());
-    return new VariableDeclarationNode(line, column, type, name, initializer, true);
+    final var visible = context.visibility() != null && context.visibility().PUBLIC() != null;
+    return new VariableDeclarationNode(line, column, type, name, initializer, true, visible);
   }
 
   @Override

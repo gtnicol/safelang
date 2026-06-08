@@ -1288,6 +1288,18 @@ public class BytecodeCompiler implements ASTVisitor<Void> {
               chunk().emitByte(args.size());
               return null;
             }
+            // Qualified module-owned builtin with no SAFE trampoline (e.g. std:range):
+            // emit a builtin CALL, mirroring the unqualified builtin path below.
+            if (BuiltinRegistry.isBuiltin(name) && BuiltinRegistry.module(name).equals(prefix)) {
+              for (final var arg : args) {
+                arg.accept(BytecodeCompiler.this);
+              }
+              final var builtinIndex = pool.addName(name);
+              chunk().emitOpcode(OpCode.CALL);
+              chunk().emitShort(builtinIndex);
+              chunk().emitByte(args.size());
+              return null;
+            }
             throw new BytecodeException("Undefined or private function: " + prefix + "." + name);
           }
         }

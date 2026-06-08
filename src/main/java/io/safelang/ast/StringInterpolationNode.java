@@ -7,7 +7,7 @@ public record StringInterpolationNode(int line, int column, List<ASTNode> parts)
     implements ASTNode {
 
   public StringInterpolationNode {
-    parts = parts != null ? new ArrayList<>(parts) : new ArrayList<>();
+    parts = parts != null ? List.copyOf(parts) : List.of();
   }
 
   @Override

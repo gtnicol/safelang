@@ -1,6 +1,5 @@
 package io.safelang.ast;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -11,7 +10,7 @@ public record DoExpressionNode(int line, int column, List<ASTNode> statements, A
     implements ASTNode {
 
   public DoExpressionNode {
-    statements = statements != null ? new ArrayList<>(statements) : new ArrayList<>();
+    statements = statements != null ? List.copyOf(statements) : List.of();
   }
 
   @Override

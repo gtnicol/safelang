@@ -7,7 +7,7 @@ public record ObjectCreationNode(
     int line, int column, String type, List<FieldAssignmentNode> fields) implements ASTNode {
 
   public ObjectCreationNode {
-    fields = fields != null ? new ArrayList<>(fields) : new ArrayList<>();
+    fields = fields != null ? List.copyOf(fields) : List.of();
   }
 
   @Override

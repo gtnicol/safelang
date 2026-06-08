@@ -155,6 +155,23 @@ class StdlibExtensionTests {
                 """));
   }
 
+  @Test
+  void randintExtremeRangeStaysInBounds() {
+    // The full-width long range overflows the old low + (long)(nextDouble() * (high - low))
+    // computation; the bounded RNG must still produce an in-range value without error.
+    assertEquals(
+        "true",
+        TestHelper.run(
+            """
+                program test;
+                import io;
+                import math;
+                math:seed(7);
+                int r = math:randint(-9223372036854775807, 9223372036854775807);
+                io:println(r >= -9223372036854775807 && r < 9223372036854775807);
+                """));
+  }
+
   // ========== B3: Functional Module ==========
 
   @Test

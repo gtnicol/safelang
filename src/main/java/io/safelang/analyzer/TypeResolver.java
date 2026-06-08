@@ -681,6 +681,11 @@ class TypeResolver {
       return false;
     }
     if (expected.parameters().size() != actual.parameters().size()) {
+      // A raw (zero-parameter) type matches a parameterized one of the same name. This is a
+      // deliberate inference hole, not a loose check: an empty literal `[]`/`{}` resolves to raw
+      // `list`/`map`/`set` (see resolve(ListLiteralNode)), and `None`/`Err` to raw `Option`/
+      // `Result`, with no element type to compare. Rejecting these requires a wildcard/unknown
+      // type to carry the "element unknown" provenance — absent that, raw means "any args".
       return expected.parameters().isEmpty() || actual.parameters().isEmpty();
     }
     for (int i = 0; i < expected.parameters().size(); i++) {
@@ -833,7 +838,9 @@ class TypeResolver {
       }
       return false;
     }
-    if (!pattern.name().equals(actual.name())) return false;
+    // Module-aware name match, consistent with matches(): bind `mod.Box<int>` against `Box<int>`.
+    if (!equivalentName(pattern.name(), actual.name())) return false;
+    // Raw on either side is the same inference hole tolerated by matches() — see the note there.
     if (pattern.parameters().isEmpty() || actual.parameters().isEmpty()) return true;
     if (pattern.parameters().size() != actual.parameters().size()) return false;
     for (int i = 0; i < pattern.parameters().size(); i++) {

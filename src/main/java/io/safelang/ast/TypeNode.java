@@ -18,8 +18,8 @@ public record TypeNode(
     implements ASTNode {
 
   public TypeNode {
-    parameters = parameters != null ? new ArrayList<>(parameters) : new ArrayList<>();
-    members = members != null ? new ArrayList<>(members) : new ArrayList<>();
+    parameters = parameters != null ? List.copyOf(parameters) : List.of();
+    members = members != null ? List.copyOf(members) : List.of();
   }
 
   public TypeNode(final int line, final int column, final String name) {

@@ -82,7 +82,9 @@ public final class MathBuiltins {
           final var low = args.getFirst().asInt();
           final var high = args.get(1).asInt();
           if (high <= low) return SAFEValue.ofInt(low);
-          return SAFEValue.ofInt(low + (long) (random[0].nextDouble() * (high - low)));
+          // nextLong(origin, bound) is uniform and overflow-safe across the full long range,
+          // unlike low + (long)(nextDouble() * (high - low)) which overflows and loses precision.
+          return SAFEValue.ofInt(random[0].nextLong(low, high));
         });
 
     executors.register(

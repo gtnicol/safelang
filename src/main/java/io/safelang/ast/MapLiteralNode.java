@@ -5,7 +5,7 @@ import java.util.*;
 public record MapLiteralNode(int line, int column, List<MapEntryNode> entries) implements ASTNode {
 
   public MapLiteralNode {
-    entries = entries != null ? new ArrayList<>(entries) : new ArrayList<>();
+    entries = entries != null ? List.copyOf(entries) : List.of();
   }
 
   @Override

@@ -167,7 +167,7 @@ class ModuleTests {
             public int double(int n) {
                 return n * 2;
             }
-            const float PI = 3.14;
+            public const float PI = 3.14;
             """);
     writeModule(
         "main",
@@ -189,7 +189,7 @@ class ModuleTests {
             public int double(int n) {
                 return n * 2;
             }
-            const float PI = 3.14;
+            public const float PI = 3.14;
             """);
     writeModule(
         "main",
@@ -200,6 +200,82 @@ class ModuleTests {
             io:println(constants.PI);
             """);
     assertEquals("3.14", compile("main"));
+  }
+
+  @Test
+  void testSelectiveConstantImportInterpreter() throws IOException {
+    writeModule(
+        "constants",
+        """
+            module constants;
+            public const float PI = 3.14;
+            """);
+    writeModule(
+        "main",
+        """
+            program main;
+            import io;
+            import constants { PI };
+            io:println(constants.PI);
+            """);
+    assertEquals("3.14", interpret("main"));
+  }
+
+  @Test
+  void testSelectiveConstantImportBytecode() throws IOException {
+    writeModule(
+        "constants",
+        """
+            module constants;
+            public const float PI = 3.14;
+            """);
+    writeModule(
+        "main",
+        """
+            program main;
+            import io;
+            import constants { PI };
+            io:println(constants.PI);
+            """);
+    assertEquals("3.14", compile("main"));
+  }
+
+  @Test
+  void testPrivateConstantSelectiveImportRejected() throws IOException {
+    writeModule(
+        "secret",
+        """
+            module secret;
+            const int CODE = 7;
+            """);
+    writeModule(
+        "main",
+        """
+            program main;
+            import io;
+            import secret { CODE };
+            io:println(CODE);
+            """);
+    assertThrows(RuntimeException.class, () -> interpret("main"));
+  }
+
+  @Test
+  void testPrivateConstantQualifiedAccessRejected() throws IOException {
+    writeModule(
+        "secret",
+        """
+            module secret;
+            const int CODE = 7;
+            """);
+    writeModule(
+        "main",
+        """
+            program main;
+            import io;
+            import secret;
+            io:println(secret.CODE);
+            """);
+    assertThrows(RuntimeException.class, () -> interpret("main"));
   }
 
   // ========== Enum Export ==========
@@ -449,7 +525,7 @@ class ModuleTests {
             public int mul(int a, int b) {
                 return a * b;
             }
-            const int MAGIC = 42;
+            public const int MAGIC = 42;
             """);
     writeModule(
         "main",

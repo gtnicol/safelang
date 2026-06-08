@@ -283,6 +283,12 @@ public class TestRunner {
   }
 
   private void print(final Result result) {
+    // Quiet by default: a passing file is accounted for in the summary table, so don't print its
+    // per-file block. Only files that errored or had failures get the verbose treatment, keeping
+    // `mvn test` and `test <dir>` output focused on what actually needs attention.
+    if (result.error() == null && result.failed() == 0) {
+      return;
+    }
     System.out.println("=== " + result.file() + " ===");
     if (result.error() != null) {
       System.out.println("  ERROR: " + result.error());

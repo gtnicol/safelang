@@ -6,7 +6,7 @@ public record EnumVariantNode(int line, int column, String name, List<TypeNode> 
     implements ASTNode {
 
   public EnumVariantNode {
-    fields = fields != null ? new ArrayList<>(fields) : new ArrayList<>();
+    fields = fields != null ? List.copyOf(fields) : List.of();
   }
 
   public boolean hasFields() {

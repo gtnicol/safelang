@@ -11,7 +11,10 @@ final class WasmBuiltinCollector {
       return;
     }
     if (node instanceof FunctionCallNode call) {
-      if (call.prefix() == null && BuiltinRegistry.isBuiltin(call.name())) {
+      // Unqualified builtins, plus qualified module-owned builtins with no SAFE trampoline
+      // (e.g. std:range), which dispatch to the same builtin stub.
+      if (BuiltinRegistry.isBuiltin(call.name())
+          && (call.prefix() == null || call.prefix().equals(BuiltinRegistry.module(call.name())))) {
         builtins.add(call.name());
       }
       for (final var argument : call.arguments()) {

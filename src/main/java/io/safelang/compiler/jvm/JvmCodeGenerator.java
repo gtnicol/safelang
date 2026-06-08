@@ -74,6 +74,7 @@ final class JvmCodeGenerator {
   private final List<EnumDeclarationNode> programEnums = new ArrayList<>();
   private final Map<String, List<String>> fields = new HashMap<>();
   private final Map<String, Map<String, FunctionDeclarationNode>> moduleFunctions = new HashMap<>();
+  private final Map<String, Map<String, VariableDeclarationNode>> moduleConstants = new HashMap<>();
   private final Map<String, Collection<EnumDeclarationNode>> moduleEnums = new HashMap<>();
   private final Deque<Pending> worklist = new ArrayDeque<>();
   private final Set<String> queued = new HashSet<>();
@@ -889,7 +890,28 @@ final class JvmCodeGenerator {
     if (owner == null || registry == null) {
       return null;
     }
-    return registry.constant(owner, name);
+    // Resolve from the module's own AST (all constants, public and private) rather than the
+    // registry's public-only export map — a module references its own private constants.
+    // Cross-module visibility is enforced by the analyzer. Mirrors moduleFunctions().
+    return moduleConstants(owner).get(name);
+  }
+
+  private Map<String, VariableDeclarationNode> moduleConstants(final String owner) {
+    return moduleConstants.computeIfAbsent(
+        owner,
+        key -> {
+          final var map = new HashMap<String, VariableDeclarationNode>();
+          final var program = registry == null ? null : registry.program(key);
+          if (program != null) {
+            for (final var declaration : program.declarations()) {
+              if (declaration instanceof VariableDeclarationNode constant
+                  && constant.isConstant()) {
+                map.put(constant.name(), constant);
+              }
+            }
+          }
+          return map;
+        });
   }
 
   private List<String> fieldsOf(final String owner, final String type) {

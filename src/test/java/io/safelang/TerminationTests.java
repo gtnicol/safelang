@@ -42,6 +42,33 @@ class TerminationTests {
     analyzer.analyze(program);
   }
 
+  @Test
+  void whileBoundOverMaximumRejected() {
+    // A literal while-bound above MAX_WHILE_BOUND is rejected at compile time so every backend
+    // (including the AOT artifacts) refuses it.
+    assertThrows(
+        SemanticException.class,
+        () ->
+            analyze(
+                """
+                program test;
+                import io;
+                while (true) bound (2000000000) { io:println("x"); }
+                """));
+  }
+
+  @Test
+  void whileBoundWithinMaximumAccepted() {
+    assertDoesNotThrow(
+        () ->
+            analyze(
+                """
+                program test;
+                import io;
+                while (true) bound (1000) { io:println("x"); }
+                """));
+  }
+
   // ======================== Valid structural recursion ========================
 
   @Test
@@ -873,6 +900,118 @@ class TerminationTests {
                 program test;
                 int f(int n) {
                     return if (n <= 0) then 1 else f(n - 1);
+                }
+                """));
+  }
+
+  @Test
+  void incrementingGuardParamRejected() {
+    // The reported bypass: m-1 decreases, but the base case is guarded by n (which GROWS via n+1),
+    // so the decreasing measure never gates the recursion — must be rejected.
+    assertThrows(
+        SemanticException.class,
+        () ->
+            analyze(
+                """
+                program test;
+                int foo(int n, int m) {
+                    return if (n <= 0) then m else foo(n + 1, m - 1);
+                }
+                """));
+  }
+
+  @Test
+  void decreasingParamInGuardAccepted() {
+    // Same shape, but the base case is guarded by the DECREASING parameter b — terminates, accept.
+    assertDoesNotThrow(
+        () ->
+            analyze(
+                """
+                program test;
+                int foo(int a, int b) {
+                    return if (b <= 0) then a else foo(a + 1, b - 1);
+                }
+                """));
+  }
+
+  @Test
+  void orGuardWithOneGrowingDisjunctRejected() {
+    // Soundness bypass: the then-branch recurses, so the base (else) is reached only when the whole
+    // condition is FALSE — i.e. growing<=0 AND shrinking<=0. `growing` grows without bound, so the
+    // base is unreachable even though `shrinking` decreases. Must be rejected.
+    assertThrows(
+        SemanticException.class,
+        () ->
+            analyze(
+                """
+                program test;
+                int f(int growing, int shrinking) {
+                    return if (growing > 0 || shrinking > 0)
+                        then f(growing + 1, shrinking - 1) else 0;
+                }
+                """));
+  }
+
+  @Test
+  void orGuardBothDisjunctsDecreasingAccepted() {
+    // then-branch recurses; base (else) reached when BOTH a<=0 AND b<=0. Both decrease, so the base
+    // is reachable — accept.
+    assertDoesNotThrow(
+        () ->
+            analyze(
+                """
+                program test;
+                int f(int a, int b) {
+                    return if (a > 0 || b > 0) then f(a - 1, b - 1) else 0;
+                }
+                """));
+  }
+
+  @Test
+  void andGuardWithDecreasingConjunctAccepted() {
+    // else-branch recurses; base (then) reached when the whole condition is TRUE: n<=0 AND n<=1.
+    // For an `&&` base-when-true every conjunct must be driven true, and the decreasing n drives
+    // both comparisons — accept.
+    assertDoesNotThrow(
+        () ->
+            analyze(
+                """
+                program test;
+                int f(int n) {
+                    return if (n <= 0 && n <= 1) then 0 else f(n - 1);
+                }
+                """));
+  }
+
+  @Test
+  void negatedGuardAccepted() {
+    // else recurses; base (then) reached when condition TRUE: !(n>0) = n<=0. The negation flips the
+    // polarity, and the decreasing n drives n<=0 — accept.
+    assertDoesNotThrow(
+        () ->
+            analyze(
+                """
+                program test;
+                int f(int n) {
+                    return if (!(n > 0)) then 0 else f(n - 1);
+                }
+                """));
+  }
+
+  @Test
+  void lexicographicMeasureNeedsDecreasesClause() {
+    // Neither parameter strictly decreases on EVERY call (x is unchanged on the second branch), so
+    // no single monotone measure exists — the stronger rule requires an explicit decreases clause.
+    assertThrows(
+        SemanticException.class,
+        () ->
+            analyze(
+                """
+                program test;
+                int f(int x, int y) {
+                    return if (x <= 0) then 0
+                        else if (y <= 0) then f(x - 1, y)
+                        else f(x, y - 1);
                 }
                 """));
   }

@@ -14,7 +14,7 @@
 #   interpreter  bytecode  native  wasm
 set -u
 
-JAR="target/safe-lang-1.0-SNAPSHOT-cli.jar"
+JAR="target/safe-lang-1.0.0-cli.jar"
 BENCH_DIR="benchmarks"
 RESULTS=$(mktemp)
 trap 'rm -f "$RESULTS"' EXIT

@@ -191,7 +191,7 @@ final class CCallCompiler {
             .append(" ")
             .append(temp)
             .append(" = ")
-            .append(context.emit(provided.get(i)))
+            .append(context.wrapStructArgForCall(context.emit(provided.get(i)), provided.get(i)))
             .append(";");
         // Temporarily register the temp so default expressions can reference the param name
         context.variables().put(params.get(i).name(), params.get(i).type().fullName());
@@ -219,7 +219,9 @@ final class CCallCompiler {
               .append(" ")
               .append(temp)
               .append(" = ")
-              .append(context.emit(params.get(i).initial()))
+              .append(
+                  context.wrapStructArgForCall(
+                      context.emit(params.get(i).initial()), params.get(i).initial()))
               .append(";");
           context.aliases(saved);
           context.variables().clear();
@@ -241,12 +243,14 @@ final class CCallCompiler {
     final var builder = new StringBuilder();
     for (int i = 0; i < provided.size(); i++) {
       if (i > 0) builder.append(", ");
-      builder.append(context.emit(provided.get(i)));
+      builder.append(context.wrapStructArgForCall(context.emit(provided.get(i)), provided.get(i)));
     }
     for (int i = provided.size(); i < params.size(); i++) {
       if (params.get(i).hasDefault()) {
         if (!builder.isEmpty()) builder.append(", ");
-        builder.append(context.emit(params.get(i).initial()));
+        builder.append(
+            context.wrapStructArgForCall(
+                context.emit(params.get(i).initial()), params.get(i).initial()));
       }
     }
     // Extract function name from "name(" pattern

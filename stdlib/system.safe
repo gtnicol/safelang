@@ -1,0 +1,14 @@
+module system;
+
+// The captured result of running a command.
+public type Output {
+    public const int exit;
+    public const string stdout;
+    public const string stderr;
+}
+
+public enum RunResult { Ok(Output), Err(string) }
+
+// Run a command as an argument list (no shell interpretation). The first element is the
+// program; the rest are its arguments.
+public RunResult exec(list<string> command) { return system_exec(command); }

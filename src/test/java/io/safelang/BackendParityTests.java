@@ -176,4 +176,20 @@ class BackendParityTests {
         io:println(ages["bob"]);
         """);
   }
+
+  // --- Tuple destructuring ---
+
+  @Test
+  void testTupleDestructuring() {
+    parity(
+        """
+        program test;
+        import io;
+        (int, string, boolean) trio = (1, "hi", true);
+        const (a, b, c) = trio;
+        io:println(a);
+        io:println(b);
+        io:println(c);
+        """);
+  }
 }

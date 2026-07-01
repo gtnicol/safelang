@@ -17,6 +17,11 @@ import java.util.*;
  */
 class PurityChecker {
 
+  // Host-dependent global variables (baked from System.getProperty) — referencing one makes
+  // execution machine-specific, so strict/deterministic mode rejects them like a NONDETERMINISTIC
+  // builtin. Keep in sync with the ENVIRONMENT-gated variables in BuiltinRegistry.
+  static final Set<String> HOST_DEPENDENT = Set.of("OS", "ARCH", "OS_VERSION", "PLATFORM");
+
   private final Map<FunctionDeclarationNode, Boolean> cache = new IdentityHashMap<>();
   private final Map<String, FunctionDeclarationNode> functions;
   private final ModuleRegistry registry;
@@ -230,6 +235,8 @@ class PurityChecker {
         if (isNodeImpure(range.start()) || isNodeImpure(range.end())) yield true;
         yield range.hasStep() && isNodeImpure(range.step());
       }
+      case VariableReferenceNode ref ->
+          ref.parts().size() == 1 && HOST_DEPENDENT.contains(ref.parts().getFirst());
       case FieldAccessNode access -> isNodeImpure(access.receiver());
       case ObjectCreationNode creation -> {
         for (final var field : creation.fields()) {

@@ -166,11 +166,13 @@ class TypeResolver {
         FunctionDeclarationNode function = null;
         if (call.hasPrefix() && registry.has(call.prefix())) {
           function = registry.function(call.prefix(), call.name());
-          // Prefer builtin signature when it has richer generic type info
+          // Use the builtin signature when there is no SAFE wrapper function (a builtin invoked
+          // directly under its module, e.g. file:sread -> ReadResult), or when it carries richer
+          // generic type info than the wrapper.
           final var builtin = BuiltinRegistry.signature(call.name());
           if (builtin != null
               && call.prefix().equals(BuiltinRegistry.module(call.name()))
-              && hasVariables(builtin)) {
+              && (function == null || hasVariables(builtin))) {
             function = builtin;
           }
         } else if (!call.hasPrefix()) {

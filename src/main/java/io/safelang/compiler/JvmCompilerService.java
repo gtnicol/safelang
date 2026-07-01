@@ -10,7 +10,12 @@ public final class JvmCompilerService implements SafeCompiler {
   public SafeCompileResult compile(final CompileRequest request) throws Exception {
     final var output = request.withExtension(".jar");
     final var main =
-        JvmBackend.emit(request.program(), request.registry(), request.baseName(), output);
+        JvmBackend.emit(
+            request.program(),
+            request.registry(),
+            request.baseName(),
+            output,
+            request.capabilities());
     final var run = "java -jar " + output;
     return new SafeCompileResult(output, List.of(output), run);
   }

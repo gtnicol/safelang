@@ -1,9 +1,12 @@
 package io.safelang.compiler.c;
 
+import io.safelang.ast.ASTNode;
 import io.safelang.ast.CaseExpressionNode;
 import io.safelang.ast.EnumPatternNode;
 import io.safelang.ast.EnumVariantNode;
+import io.safelang.ast.FunctionCallNode;
 import io.safelang.ast.LiteralNode;
+import java.util.Set;
 
 /**
  * Emits C code for a SAFE {@code case ... of} expression.
@@ -18,6 +21,7 @@ import io.safelang.ast.LiteralNode;
 final class CCaseCompiler {
 
   private final CCaseContext context;
+  private int counter;
 
   CCaseCompiler(final CCaseContext context) {
     this.context = context;
@@ -51,6 +55,21 @@ final class CCaseCompiler {
         if (matched != null) break;
       }
     }
+
+    // Bind the subject to a temp ONCE so an effectful streaming subject (e.g. `file:sline(r)`,
+    // which
+    // reads a fresh line on every evaluation) is not re-evaluated for each branch's tag check and
+    // binding extraction. Scoped to the streaming s* builtins: their result enums hold only arena
+    // strings/ints (never refcounted heap), so aliasing the temp is safe — whereas binding a temp
+    // for a refcounted enum (e.g. lsm internals over `bytes`) would double-free under the C cycle
+    // collector. Every other case keeps the original inline lowering.
+    final var bindTemp = matched != null && streaming(node.subject());
+    // Whether the matched enum is recursive (pointer-typed) — independent of bindTemp; it drives
+    // both
+    // the temp's C type and the `->` vs `.` member access.
+    final var pointer = matched != null && context.recursive().contains(matched);
+    final var temp = "__case" + counter++ + "__";
+    final var subjectRef = bindTemp ? temp : subject;
 
     int depth = 0;
 
@@ -91,11 +110,10 @@ final class CCaseCompiler {
           if (pattern instanceof EnumPatternNode ep && matched != null) {
             // Enum pattern: compare tag and bind variables
             // Use -> for recursive (pointer) enums, . for value enums
-            final var pointer = context.recursive().contains(matched);
             final var access = pointer ? "->" : ".";
             final var condition = new StringBuilder();
             condition
-                .append(subject)
+                .append(subjectRef)
                 .append(access)
                 .append("tag == ")
                 .append(matched)
@@ -129,7 +147,7 @@ final class CCaseCompiler {
                       .append(" ")
                       .append(context.user(binding))
                       .append(" = ")
-                      .append(subject)
+                      .append(subjectRef)
                       .append(access)
                       .append("data.")
                       .append(ep.variant())
@@ -164,12 +182,12 @@ final class CCaseCompiler {
             if (pattern instanceof LiteralNode.StringLiteral) {
               condition
                   .append("strcmp(")
-                  .append(subject)
+                  .append(subjectRef)
                   .append(", ")
                   .append(match)
                   .append(") == 0");
             } else {
-              condition.append(subject).append(" == ").append(match);
+              condition.append(subjectRef).append(" == ").append(match);
             }
             if (branch.hasGuard()) {
               condition.append(" && ").append(context.emit(branch.guard()));
@@ -197,7 +215,20 @@ final class CCaseCompiler {
       builder.append(")".repeat(Math.max(0, depth)));
     }
 
+    if (bindTemp) {
+      // Evaluate the subject exactly once into a temp, then match against it.
+      final var ctype = pointer ? matched + "*" : matched;
+      return "({ " + ctype + " " + temp + " = " + subject + "; " + builder + "; })";
+    }
     return builder.toString();
+  }
+
+  // The streaming file builtins whose result must be evaluated exactly once as a case subject.
+  private static final Set<String> STREAMING =
+      Set.of("sopen", "sline", "sread", "swrite", "sflush");
+
+  private static boolean streaming(final ASTNode subject) {
+    return subject instanceof FunctionCallNode call && STREAMING.contains(call.name());
   }
 
   /** Look up an enum variant by name within a known enum type. */

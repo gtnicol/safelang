@@ -52,16 +52,60 @@ public final class JvmRuntime {
   private final List<String> arguments = new ArrayList<>();
   private final Map<Integer, FileHandle> handles = new HashMap<>();
   private final Map<Integer, BinaryFileHandle> binaries = new HashMap<>();
+  private final Map<Integer, io.safelang.runtime.StreamHandle> streams = new HashMap<>();
   private final Map<String, Deque<Long>> measures = new HashMap<>();
   private final Map<String, Method> methods = new HashMap<>();
   private Class<?> program;
+
+  // Bound recursion so deep user recursion traps with a SAFEException instead of a raw
+  // StackOverflowError, matching the interpreter, bytecode VM, and C runtime (all 1000).
+  private static final int MAX_DEPTH = 1000;
+  private int depth;
 
   private JvmRuntime() {
     final var random = new Random[] {new Random()};
     final var scanner = new Scanner(System.in, StandardCharsets.UTF_8);
     final var counter = new AtomicInteger(0);
+    // Capability gating happened at compile time (JvmCodeGenerator.builtin), so the jar only
+    // contains
+    // granted builtins. The fine-grained refinements (fs jail / egress allowlist / exec allowlist /
+    // serve bind) travel with the deployed artifact via the host's environment so an operator can
+    // confine the jar at deploy time; the existing Java builtins enforce them. No env ⇒
+    // unrestricted
+    // (the in-process/test default).
     BuiltinRegistration.registerAll(
-        executors, OUTPUT::get, scanner, random, handles, binaries, counter, arguments);
+        executors,
+        OUTPUT::get,
+        scanner,
+        random,
+        handles,
+        binaries,
+        streams,
+        counter,
+        arguments,
+        policyFromEnv());
+  }
+
+  /** Build the host policy from the deployment environment (see the constructor comment). */
+  private static io.safelang.runtime.HostPolicy policyFromEnv() {
+    final var builder = io.safelang.runtime.HostPolicy.trusted().toBuilder();
+    final var root = System.getenv("SAFE_FS_ROOT");
+    if (root != null && !root.isBlank()) {
+      builder.fsRoot(java.nio.file.Path.of(root));
+    }
+    final var net = System.getenv("SAFE_NET_ALLOW");
+    if (net != null && !net.isBlank()) {
+      builder.netAllow(java.util.List.of(net.split(",")));
+    }
+    final var exec = System.getenv("SAFE_EXEC_ALLOW");
+    if (exec != null && !exec.isBlank()) {
+      builder.execAllow(java.util.List.of(exec.split(",")));
+    }
+    final var bind = System.getenv("SAFE_SERVE_BIND");
+    if (bind != null && !bind.isBlank()) {
+      builder.serveBind(bind);
+    }
+    return builder.build();
   }
 
   /** Redirect this thread's program output to {@code writer} (used by in-process harnesses). */
@@ -268,11 +312,18 @@ public final class JvmRuntime {
     return SAFEValue.ofList(RangeSemantics.build(from.asInt(), to.asInt(), by.asInt()));
   }
 
-  /** Evaluate a {@code while}-loop bound, rejecting negatives, mirroring the interpreter. */
+  /**
+   * Evaluate a {@code while}-loop bound, rejecting negatives and bounds over {@link
+   * SAFEValue#MAX_WHILE_BOUND}, mirroring the interpreter and bytecode VM.
+   */
   public static long bound(final SAFEValue value) {
     final var max = value.asInt();
     if (max < 0) {
       throw new SAFEException("While loop bound must be non-negative, got " + max);
+    }
+    if (max > SAFEValue.MAX_WHILE_BOUND) {
+      throw new SAFEException(
+          "While loop bound " + max + " exceeds the maximum of " + SAFEValue.MAX_WHILE_BOUND);
     }
     return max;
   }
@@ -289,11 +340,33 @@ public final class JvmRuntime {
     final var self = CURRENT.get();
     self.program = entry;
     self.methods.clear();
+    self.depth = 0;
+    // Let higher-order builtins (e.g. http:serve) call back into SAFE closures via the shared
+    // HostCallback bridge; invoke() already resolves a function value to its generated method.
+    io.safelang.runtime.HostCallback.set(
+        (function, args) -> invoke(function, args.toArray(new SAFEValue[0])));
     // Reset the decreases measure stacks so state never leaks between sequential in-process
     // executions on the same thread; a normally-completing run pops every frame, but an
     // exceptional exit (no try/finally is emitted in raw bytecode) would otherwise leave stale
     // entries that a subsequent run with the same function name could observe.
     self.measures.clear();
+  }
+
+  /** Increment the recursion counter on entry to a generated function; trap past the limit. */
+  public static void enter(final String name) {
+    final var self = CURRENT.get();
+    if (++self.depth > MAX_DEPTH) {
+      self.depth--;
+      throw new SAFEException("Maximum call depth exceeded (" + MAX_DEPTH + ") in: " + name);
+    }
+  }
+
+  /** Decrement the recursion counter on normal return from a generated function. */
+  public static void leave() {
+    final var self = CURRENT.get();
+    if (self.depth > 0) {
+      self.depth--;
+    }
   }
 
   /** Invoke a function value (lambda) with {@code args}, dispatching to its generated method. */
@@ -379,6 +452,7 @@ public final class JvmRuntime {
 
   public static void cleanup() {
     final var self = CURRENT.get();
-    BuiltinRegistration.closeHandles(self.handles, self.binaries);
+    io.safelang.runtime.HostCallback.clear();
+    BuiltinRegistration.closeHandles(self.handles, self.binaries, self.streams);
   }
 }

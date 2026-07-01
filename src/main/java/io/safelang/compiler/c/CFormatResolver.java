@@ -105,6 +105,12 @@ final class CFormatResolver {
         };
       }
     }
+    // Struct field access (e.g. r.body) — either a FieldAccessNode or a multi-part reference.
+    // Route through type inference so a string field prints with %s, not the %lld fallback.
+    if (node instanceof FieldAccessNode
+        || (node instanceof VariableReferenceNode reference && reference.parts().size() >= 2)) {
+      return specifier(context.infer(node));
+    }
     if (node instanceof IndexAccessNode
         || node instanceof IfExpressionNode
         || node instanceof CaseExpressionNode

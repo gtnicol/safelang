@@ -34,16 +34,47 @@ public final class BuiltinRegistration {
       final Random[] random,
       final Map<Integer, FileHandle> handles,
       final Map<Integer, BinaryFileHandle> binaries,
+      final Map<Integer, io.safelang.runtime.StreamHandle> streams,
       final AtomicInteger counter,
-      final List<String> arguments) {
+      final List<String> arguments,
+      final io.safelang.runtime.HostPolicy policy) {
     IoBuiltins.register(executors, output, scanner);
     MathBuiltins.register(executors, random);
     StringBuiltins.register(executors);
     CollectionBuiltins.register(executors);
-    FileBuiltins.register(executors, handles, counter);
-    BinaryBuiltins.register(executors, binaries, counter);
+    FileBuiltins.register(executors, handles, counter, policy);
+    BinaryBuiltins.register(executors, binaries, counter, policy);
+    StreamBuiltins.register(executors, streams, counter, policy);
     HashBuiltins.register(executors);
     SystemBuiltins.register(executors, arguments);
+    HttpBuiltins.register(executors, policy);
+    ExecBuiltins.register(executors, policy);
+    gate(executors, policy.capabilities());
+  }
+
+  /**
+   * Enforce the host capability policy at runtime: replace every builtin that requires a capability
+   * the program was not granted with a stub that throws when called. This is the single seam shared
+   * by the interpreter, bytecode VM, and JVM, so it protects the {@code .safeb} bytecode path that
+   * source-level {@code --strict} analysis cannot reach.
+   */
+  private static void gate(
+      final BuiltinExecutors executors, final io.safelang.runtime.Capabilities capabilities) {
+    for (final var builtin : io.safelang.runtime.BuiltinRegistry.all()) {
+      final var capability = io.safelang.runtime.BuiltinRegistry.capability(builtin.name());
+      if (capability != null && !capabilities.granted(capability)) {
+        executors.register(
+            builtin.name(),
+            args -> {
+              throw new io.safelang.interpreter.InterpreterException(
+                  "capability denied: '"
+                      + capability
+                      + "' is required by '"
+                      + builtin.name()
+                      + "' but was not granted to this program");
+            });
+      }
+    }
   }
 
   /**
@@ -53,7 +84,9 @@ public final class BuiltinRegistration {
    * ignore errors, clear" sequence stays in one place.
    */
   public static void closeHandles(
-      final Map<Integer, FileHandle> handles, final Map<Integer, BinaryFileHandle> binaries) {
+      final Map<Integer, FileHandle> handles,
+      final Map<Integer, BinaryFileHandle> binaries,
+      final Map<Integer, io.safelang.runtime.StreamHandle> streams) {
     for (final var handle : handles.values()) {
       try {
         handle.close();
@@ -68,5 +101,12 @@ public final class BuiltinRegistration {
       }
     }
     binaries.clear();
+    for (final var handle : streams.values()) {
+      try {
+        handle.close(); // flush + close any stream left open on early exit
+      } catch (Exception ignored) {
+      }
+    }
+    streams.clear();
   }
 }

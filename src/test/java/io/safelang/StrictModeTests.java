@@ -65,6 +65,47 @@ class StrictModeTests {
           """));
       // Without strict mode, no error.
     }
+
+    @Test
+    void httpGetIsRejectedInStrict() {
+      assertThrows(
+          SemanticException.class,
+          () ->
+              TestHelper.analyze(
+                  """
+          program test;
+          import http;
+          HttpResult r = http:get("http://example.com");
+          """));
+    }
+
+    @Test
+    void systemExecIsRejectedInStrict() {
+      assertThrows(
+          SemanticException.class,
+          () ->
+              TestHelper.analyze(
+                  """
+          program test;
+          import system;
+          RunResult r = system:exec(["echo", "hi"]);
+          """));
+    }
+
+    @Test
+    void hostGlobalIsRejectedInStrict() {
+      // OS/ARCH/OS_VERSION/PLATFORM are host-dependent — referencing one makes execution
+      // machine-specific, so strict mode rejects it like a nondeterministic builtin.
+      assertThrows(
+          SemanticException.class,
+          () ->
+              TestHelper.analyze(
+                  """
+          program test;
+          import io;
+          io:println(OS);
+          """));
+    }
   }
 
   @Nested

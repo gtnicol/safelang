@@ -173,6 +173,40 @@ public class Environment {
   }
 
   /**
+   * Create a flat snapshot capturing only the named free variables by value, for closure
+   * capture-by-value. The expensive part of a snapshot is the per-value deep copy; restricting it
+   * to the variables the closure body actually references avoids the old whole-chain copy, which
+   * was O(scope size) per closure (a killer for lambdas created in a loop with large data in
+   * scope). Function/type/enum declarations are program-lifetime immutable AST nodes (cheap
+   * reference copies) and a body may call any in-scope function or name any type, so those are
+   * still flattened whole.
+   */
+  public Environment snapshot(final Collection<String> freeVars) {
+    final var result = new Environment();
+    for (final var name : freeVars) {
+      if (has(name)) {
+        result.variables.put(name, get(name).copy());
+        if (isConst(name)) {
+          result.constants.add(name);
+        }
+      }
+    }
+    final var chain = new ArrayList<Environment>();
+    var env = this;
+    while (env != null) {
+      chain.add(env);
+      env = env.parent;
+    }
+    for (int i = chain.size() - 1; i >= 0; i--) {
+      final var scope = chain.get(i);
+      result.functions.putAll(scope.functions);
+      result.types.putAll(scope.types);
+      result.enums.putAll(scope.enums);
+    }
+    return result;
+  }
+
+  /**
    * Create a flat snapshot of the entire scope chain, capturing all bindings by value into a
    * single-level environment. Used for closure capture-by-value.
    */

@@ -1,0 +1,13 @@
+program http_client;
+import io;
+import std;
+// Selective import keeps a native build dependency-light (libcurl only, no OpenSSL).
+import http { get, HttpResult };
+
+// http:get returns Ok(Response) or Err(message). Response carries status, body, and headers.
+HttpResult result = http:get("https://example.com");
+
+io:println(case result of {
+    Ok(resp): "status " + std:str(resp.status) + ", " + std:str(std:len(resp.body)) + " bytes";
+    Err(e): "request failed: " + e;
+});

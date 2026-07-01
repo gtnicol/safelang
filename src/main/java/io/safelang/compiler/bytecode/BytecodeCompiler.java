@@ -1015,6 +1015,14 @@ public class BytecodeCompiler implements ASTVisitor<Void> {
       chunk().emitOpShort(OpCode.CONST_INT, pool.addInt(0L));
       chunk().emitOpcode(OpCode.CMP_GE);
       chunk().emitOpShort(OpCode.ASSERT, pool.addString("While loop bound must be non-negative"));
+      chunk().emitOpcode(OpCode.DUP);
+      chunk().emitOpShort(OpCode.CONST_INT, pool.addInt(SAFEValue.MAX_WHILE_BOUND));
+      chunk().emitOpcode(OpCode.CMP_LE);
+      chunk()
+          .emitOpShort(
+              OpCode.ASSERT,
+              pool.addString(
+                  "While loop bound exceeds the maximum of " + SAFEValue.MAX_WHILE_BOUND));
       final var counter = frame().next++;
       chunk().emitOpShort(OpCode.STORE_LOCAL, counter);
       final var start = chunk().position();

@@ -96,6 +96,8 @@ public LSM flush(LSM store) {
     string name = str(store.sequence) + ".sst";
     string path = store.directory + "/" + name;
     int handle = binary:open(path, "w");
+    // The C backend auto-releases the throwaway `keys(...)` list here (borrow-only `sort` consumer,
+    // untyped-list producer — see CCodeGenerator.resolveReleasing), so the inline form is leak-free.
     list<string> sorted = sort(keys(store.memtable));
     // Write data entries, collecting index entries every INDEX_INTERVAL records
     list<(int, bytes)> index = [];

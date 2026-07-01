@@ -150,6 +150,14 @@ final class CTypeInferer {
             }
           }
         }
+        // Fallback: a builtin invoked directly under its module (e.g. file:sopen -> StreamResult,
+        // with no SAFE wrapper) — resolve its declared return type so case/match picks the right
+        // enum. Placed after the precise inferences above (which carry generic element types the
+        // bare registry return name lacks, e.g. range -> list<int>).
+        if (call.hasPrefix()) {
+          final var builtinReturn = io.safelang.runtime.BuiltinRegistry.returns(fname);
+          if (builtinReturn != null && !"void".equals(builtinReturn)) yield builtinReturn;
+        }
         // Check if calling a closure variable — infer return from fn<..., RetType>
         if (!call.hasPrefix()) {
           final var closure = context.variables().get(fname);

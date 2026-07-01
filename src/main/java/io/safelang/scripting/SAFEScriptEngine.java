@@ -135,6 +135,11 @@ public class SAFEScriptEngine extends AbstractScriptEngine implements Compilable
       throw translated;
     } catch (ParserException | SemanticException | InterpreterException exception) {
       throw new ScriptException(exception.getMessage());
+    } catch (final StackOverflowError error) {
+      // A runaway script must not crash the embedding host thread with a raw Error.
+      throw new ScriptException("SAFE program exceeded the stack limit (possible deep recursion)");
+    } catch (final Error error) {
+      throw new ScriptException("SAFE program failed: " + error);
     }
   }
 
@@ -209,9 +214,18 @@ public class SAFEScriptEngine extends AbstractScriptEngine implements Compilable
     }
   }
 
+  /** Engine/global-scope bindings through which an embedder configures the host policy. */
+  public static final String CAPABILITIES = "safe.capabilities";
+
+  public static final String FS_ROOT = "safe.fs.root";
+  public static final String NET_ALLOW = "safe.net.allow";
+  public static final String EXEC_ALLOW = "safe.exec.allow";
+  public static final String ENV_SCRUB = "safe.env.scrub";
+  public static final String SERVE_BIND = "safe.serve.bind";
+
   Object execute(
       final ProgramNode program, final ModuleRegistry registry, final ScriptContext context) {
-    final var interpreter = new Interpreter();
+    final var interpreter = new Interpreter(java.util.List.of(), policy(context));
     interpreter.setRegistry(registry);
 
     final var writer = context.getWriter();
@@ -233,6 +247,47 @@ public class SAFEScriptEngine extends AbstractScriptEngine implements Compilable
     final var result = interpreter.interpret(program);
     sync(interpreter, names, context);
     return unconvert(result);
+  }
+
+  /**
+   * Assemble the host policy from engine bindings. Deny-by-default for embedded/untrusted code:
+   * with no {@code safe.capabilities} binding the script gets no host access; the embedder opts in
+   * and may further constrain a granted capability via {@code safe.fs.root} / {@code
+   * safe.net.allow} / {@code safe.exec.allow} / {@code safe.env.scrub} / {@code safe.serve.bind}.
+   */
+  private io.safelang.runtime.HostPolicy policy(final ScriptContext context) {
+    final var capabilities =
+        context.getAttribute(CAPABILITIES) instanceof String caps
+            ? io.safelang.runtime.Capabilities.parse(caps)
+            : io.safelang.runtime.Capabilities.none();
+    final var builder =
+        io.safelang.runtime.HostPolicy.sandbox().toBuilder().capabilities(capabilities);
+    if (context.getAttribute(FS_ROOT) instanceof String root && !root.isBlank()) {
+      builder.fsRoot(java.nio.file.Path.of(root));
+    }
+    if (context.getAttribute(NET_ALLOW) instanceof String hosts) {
+      builder.netAllow(split(hosts));
+    }
+    if (context.getAttribute(EXEC_ALLOW) instanceof String commands) {
+      builder.execAllow(split(commands));
+    }
+    if (context.getAttribute(ENV_SCRUB) instanceof String scrub) {
+      builder.scrubEnv(Boolean.parseBoolean(scrub));
+    }
+    if (context.getAttribute(SERVE_BIND) instanceof String bind && !bind.isBlank()) {
+      builder.serveBind(bind);
+    }
+    return builder.build();
+  }
+
+  private static java.util.List<String> split(final String list) {
+    final var result = new java.util.ArrayList<String>();
+    for (final var token : list.split(",")) {
+      if (!token.isBlank()) {
+        result.add(token.trim());
+      }
+    }
+    return result;
   }
 
   private String wrap(final String script) {

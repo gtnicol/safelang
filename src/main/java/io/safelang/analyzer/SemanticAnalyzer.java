@@ -756,6 +756,17 @@ public class SemanticAnalyzer implements ASTVisitor<Void> {
     if (bound != null && !"int".equals(bound.name()) && !"uint".equals(bound.name())) {
       error("While bound must be int or uint, got " + bound.fullName(), node);
     }
+    // Reject an out-of-range literal bound at compile time so every backend (including the AOT C/
+    // JVM/WASM artifacts, which lack the interpreter/VM runtime cap) rejects it uniformly.
+    if (node.bound() instanceof io.safelang.ast.LiteralNode.IntLiteral literal
+        && literal.value() > io.safelang.runtime.SAFEValue.MAX_WHILE_BOUND) {
+      error(
+          "While loop bound "
+              + literal.value()
+              + " exceeds the maximum of "
+              + io.safelang.runtime.SAFEValue.MAX_WHILE_BOUND,
+          node);
+    }
     // Collect variables referenced anywhere in the bound expression, then check that none of
     // them are assigned inside the loop body — the bound is evaluated once, so mutating an input
     // would silently change the termination guarantee.

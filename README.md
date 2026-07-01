@@ -33,7 +33,10 @@ at compile time or enforced at runtime. This makes SAFE a good fit for:
 SAFE uses a **two-tier** system:
 
 1. **Static** — the `TerminationChecker` proves termination for structural recursion on recursive enums and
-   numeric decrease on `int`/`uint` parameters. Programs that pass have no runtime overhead.
+   numeric decrease on `int`/`uint` parameters. For numeric recursion a parameter must **strictly decrease on
+   every** recursive call (a monotone measure) **and** that parameter must be tested by the base-case condition,
+   so a measure cannot shrink while an unrelated, growing parameter gates the recursion. Programs that pass have
+   no runtime overhead.
 2. **Runtime** — for functions the static checker cannot prove terminating, the user declares an explicit
    `decreases(expr)` clause. Every call evaluates the measure; the runtime traps if it does not strictly decrease.
    All four backends (interpreter, VM, C, WebAssembly) enforce `decreases` identically.
@@ -87,8 +90,52 @@ java -jar target/safe-lang-1.0.0-cli.jar test tests/
 java -jar target/safe-lang-1.0.0-cli.jar test --native tests/
 ```
 
-Useful flags: `--strict` / `--deterministic` (purity checking), and `--bytecode` / `--jvm` /
-`--native` / `--wasm` (select the backend for the test runner).
+Useful flags: `--strict` / `--deterministic` (purity checking — rejects non-deterministic builtins
+such as `time`, `rand`, file I/O, and the `http` / `system:exec` network/process builtins),
+`--allow` / `--deny` (host capabilities — see below), and `--bytecode` / `--jvm` / `--native` /
+`--wasm` (select the backend for the test runner).
+
+### Capabilities (host-access sandboxing)
+
+Dangerous builtins are gated by a **host capability policy** — `FILESYSTEM`, `NETWORK`, `PROCESS`,
+`ENVIRONMENT`, `STDIN`. This is the *host-access* axis, orthogonal to `--strict`'s *determinism*
+axis; a fully sandboxed embedding denies the relevant capabilities **and** runs strict.
+
+- **Embedding is deny-by-default.** The JSR-223 `ScriptEngine` *and the entire programmatic
+  `SafeRuntime` API* run untrusted code with **no** host capabilities — an embedder who forgets to
+  pass a policy gets a sandbox, not the host. Grant explicitly:
+  `engine.put("safe.capabilities", "filesystem,network")` (or `SafeRuntime.run(..., HostPolicy)`).
+- **The CLI grants all** (a trusted local dev tool, via an explicit policy). Restrict with
+  `--allow fs,net` (exactly those) or `--deny net,proc` (everything except those):
+  `java -jar … run --deny net,proc app.safe`.
+- **Enforcement is at runtime** for the interpreter, bytecode VM, and JVM — so it protects the
+  `.safeb` bytecode path that source-level `--strict` cannot — and at **compile time** for the
+  self-executing AOT artifacts (native C `build`, JVM `jvm` jar, and **WASM**): a `jvm --deny net`
+  jar / `wasm --deny fs` module physically cannot call the denied builtin. A denied call fails with
+  a clear "capability denied" / "host not allowed" error.
+- **SSRF guard:** the HTTP client resolves the URL host and blocks loopback / link-local / cloud
+  metadata / private-range IPs by default; an explicit `--net-allow` entry re-permits a trusted
+  internal target.
+- **Deployed-artifact policy:** the JVM jar reads `SAFE_FS_ROOT`/`SAFE_NET_ALLOW`/`SAFE_EXEC_ALLOW`/
+  `SAFE_SERVE_BIND` from the environment, so an operator can confine a running jar without
+  recompiling.
+
+#### Policy refinements (within a granted capability)
+
+Capabilities are coarse on/off; an embedder can further constrain a *granted* capability:
+
+| Refinement | CLI flag | Engine binding | Effect |
+|------------|----------|----------------|--------|
+| Filesystem root jail | `--fs-root <dir>` | `safe.fs.root` | All `file`/`binary` paths are confined under the root (`../`, absolute, and symlink escapes rejected). |
+| HTTP egress allowlist | `--net-allow <hosts>` | `safe.net.allow` | The client may only reach the listed hosts / `*.suffix` / CIDRs; others return `Err`. |
+| Exec command allowlist | `--exec-allow <cmds>` | `safe.exec.allow` | `system:exec` may only run a listed `argv[0]`. |
+| Env scrub | — | `safe.env.scrub` | Clear the child process environment before `exec`. |
+| Server bind address | — | `safe.serve.bind` | `http:serve` bind address (default `127.0.0.1`, loopback-only). |
+
+With no refinement set, a granted capability is unrestricted (so the trusted CLI is unchanged). The
+`http:serve` default is **loopback-only** — a guest server is not exposed to the network unless the
+embedder opens it up. The egress/jail/exec refinements are enforced on the interpreter/VM/JVM run
+paths; native-AOT binaries are a trusted-builder artifact and enforce the capability gate only.
 
 ### WebAssembly backend
 
@@ -262,6 +309,24 @@ More samples live in [`examples/`](examples/): `tour.safe` (language overview), 
 Modules in `stdlib/` cover I/O, strings, collections, math, functional helpers, sorting, trees, stacks and queues,
 files and paths, binary/bytes, hashing, JSON / XML / CSV, date-time, UUIDs, base64, environment variables, and
 on-disk key-value stores (`btree`, `lsm`, `dbm`). The `test` module powers SAFE-native test files.
+
+The `http` module provides an HTTP client (`get`, `post`, `request`) and a server (`serve`, `serve_until`,
+`serve_tls`, `serve_until_tls` — the `*_until` forms take a `fn(int) -> boolean` stop predicate). The `system` module
+runs child processes with `system:exec(["cmd", "arg"])` (argument list, no shell). These network/process builtins are
+non-deterministic and **rejected under `--strict`**; they run on the interpreter, bytecode VM, JVM, and native C
+backends (native HTTP needs libcurl; native TLS server needs OpenSSL), but not WASM.
+
+These builtins enforce fixed, fail-fast resource limits (the same on every backend): `system:exec` is bounded to 30 s
+and 16 MiB of captured output per stream (a flooding child is killed immediately); the HTTP client has a 30 s deadline
+and 32 MiB response cap and returns `Err` on a forbidden request header; the HTTP server caps request bodies (8 MiB →
+`413`), headers (64 KiB / 100 → `431`), and per-connection read time (3 s, slowloris), and aborts on a malformed request
+or a CR/LF-injected response header. `http:serve` is single-threaded (its handler runs on the calling thread) and is
+intended for **embedded/trusted** use, not a public DoS-hardened endpoint.
+
+Other sandbox limits protect the host: the **interpreter, VM, JVM, and C backends all bound recursion at 1000 frames**
+(a runaway recurses to a catchable error, never a host `StackOverflowError` — the JSR-223 engine also wraps any
+escaping `Error` as a `ScriptException`); whole-file reads and the buffered write handle are capped at **64 MiB**; and
+the on-disk databases get a transparent per-handle block cache.
 
 ## File extensions
 

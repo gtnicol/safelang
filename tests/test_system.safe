@@ -1,0 +1,35 @@
+program test_system;
+import std;
+import strings;
+import system;
+import test;
+
+string out(list<string> cmd) {
+    return case system:exec(cmd) of {
+        Ok(o): o.stdout;
+        Err(e): `ERR:${e}`;
+    };
+}
+
+int code(list<string> cmd) {
+    return case system:exec(cmd) of {
+        Ok(o): o.exit;
+        Err(e): 0 - 1;
+    };
+}
+
+string errout(list<string> cmd) {
+    return case system:exec(cmd) of {
+        Ok(o): o.stderr;
+        Err(e): `ERR:${e}`;
+    };
+}
+
+test:suite("system:exec", [
+    fn() -> test:equal(strings:trim(out(["echo", "hi"])), "hi", "echo stdout"),
+    fn() -> test:equal(std:str(code(["echo", "hi"])), "0", "echo exit 0"),
+    fn() -> test:equal(std:str(code(["sh", "-c", "exit 5"])), "5", "exit code propagates"),
+    fn() -> test:equal(strings:trim(errout(["sh", "-c", "echo oops 1>&2"])), "oops", "stderr captured")
+]);
+
+test:done();

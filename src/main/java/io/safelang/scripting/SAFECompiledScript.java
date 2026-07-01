@@ -43,6 +43,10 @@ public class SAFECompiledScript extends CompiledScript {
       final var translated = new ScriptException(exception.getMessage());
       translated.initCause(exception);
       throw translated;
+    } catch (final StackOverflowError error) {
+      throw new ScriptException("SAFE program exceeded the stack limit (possible deep recursion)");
+    } catch (final Error error) {
+      throw new ScriptException("SAFE program failed: " + error);
     }
   }
 

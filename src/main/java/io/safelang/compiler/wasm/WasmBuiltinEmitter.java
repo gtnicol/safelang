@@ -15,6 +15,7 @@ final class WasmBuiltinEmitter {
   private final WasmBuiltinSupport support;
   private final ToIntFunction<String> interner;
   private final WasmBuiltinContext context;
+  private final io.safelang.runtime.Capabilities capabilities;
 
   WasmBuiltinEmitter(
       final WasmModule module,
@@ -22,17 +23,33 @@ final class WasmBuiltinEmitter {
       final TypeRegistry types,
       final Map<String, Integer> builtins,
       final WasmBuiltinSupport support,
-      final ToIntFunction<String> interner) {
+      final ToIntFunction<String> interner,
+      final io.safelang.runtime.Capabilities capabilities) {
     this.module = module;
     this.runtime = runtime;
     this.types = types;
     this.builtins = builtins;
     this.support = support;
     this.interner = interner;
+    this.capabilities =
+        capabilities != null ? capabilities : io.safelang.runtime.Capabilities.all();
     this.context = new WasmBuiltinContext(module, runtime, types, builtins, support, interner);
   }
 
   void compile(final String builtin, final int index, final int type, final int arity) {
+    // Capability gate: refuse to emit a builtin whose host capability the build did not grant.
+    // WASM tree-shakes (only reachable builtins reach here), so this gate is precise. Mirrors the
+    // C (CCodeGenerator.gatedResolve) and JVM (JvmCodeGenerator.builtin) AOT gates.
+    final var capability = io.safelang.runtime.BuiltinRegistry.capability(builtin);
+    if (capability != null && !capabilities.granted(capability)) {
+      throw new CompilerException(
+          "builtin '"
+              + builtin
+              + "' requires capability "
+              + capability
+              + ", which this build did not grant; rebuild with --allow "
+              + capability.name().toLowerCase());
+    }
     final var function = new WasmFunction(index, type, arity);
 
     // Delegate to category emitters first; fall through to the inline switch
@@ -877,6 +894,18 @@ final class WasmBuiltinEmitter {
           function.emitCall(runtime.tagString);
         }
       }
+      case "http_get", "http_post", "http_request", "http_serve", "system_exec" ->
+          throw new CompilerException(
+              "Network/process builtin '"
+                  + builtin
+                  + "' is not available in the WASM backend; use the interpreter, bytecode VM, JVM,"
+                  + " or native C backend");
+      case "sopen", "sclose", "sline", "sread", "swrite", "sflush" ->
+          throw new CompilerException(
+              "Streaming file I/O builtin '"
+                  + builtin
+                  + "' is not supported in the WASM backend; use the interpreter, bytecode VM, or"
+                  + " JVM");
       default -> throw new CompilerException("Unsupported builtin stub: " + builtin);
     }
 

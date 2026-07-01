@@ -85,6 +85,45 @@ typedef struct {
 #define SAFE_SIZECLASS_COUNT 13
 #define SAFE_SIZECLASS_OVERSIZE 0xFFFFu
 
+/* Cap on list length, mirroring SAFEValue.MAX_LIST_SIZE and the native runtime — enforced at the
+ * append choke points so a "terminating" program cannot exhaust linear memory. */
+#define SAFE_MAX_LIST_SIZE 10000000
+
+/* ===== Cycle-collector color state (Bacon-Rajan), packed into refs =====
+ * Ported from the native runtime (safe_refcount.h). The refcount word is
+ * partitioned exactly as native: [31:30]=color, [29]=buffered, [28:0]=count.
+ * SAFE_REFS_IMMORTAL (~0u) stays an exact-compare sentinel (a live object's
+ * count never reaches 0x1FFFFFFF, so it never collides). Every refs access in
+ * this file goes through these accessors so the packing stays consistent. */
+#define SAFE_RC_COLOR_SHIFT 30
+#define SAFE_RC_COLOR_MASK  (3u << SAFE_RC_COLOR_SHIFT)
+#define SAFE_RC_BUFFERED    (1u << 29)
+#define SAFE_RC_COUNT_MASK  ((1u << 29) - 1u)
+
+#define SAFE_COLOR_BLACK  0u  /* in use or free */
+#define SAFE_COLOR_GRAY   1u  /* possible member of a cycle (being marked) */
+#define SAFE_COLOR_WHITE  2u  /* member of a garbage cycle */
+#define SAFE_COLOR_PURPLE 3u  /* possible root of a cycle */
+
+static unsigned int safe_rc_count(SAFEHeader* h) {
+    return h->refs & SAFE_RC_COUNT_MASK;
+}
+static void safe_rc_set_count(SAFEHeader* h, unsigned int c) {
+    h->refs = (h->refs & ~SAFE_RC_COUNT_MASK) | (c & SAFE_RC_COUNT_MASK);
+}
+static unsigned int safe_rc_color(SAFEHeader* h) {
+    return (h->refs & SAFE_RC_COLOR_MASK) >> SAFE_RC_COLOR_SHIFT;
+}
+static void safe_rc_set_color(SAFEHeader* h, unsigned int color) {
+    h->refs = (h->refs & ~SAFE_RC_COLOR_MASK) | ((color << SAFE_RC_COLOR_SHIFT) & SAFE_RC_COLOR_MASK);
+}
+static int safe_rc_buffered(SAFEHeader* h) {
+    return (h->refs & SAFE_RC_BUFFERED) != 0;
+}
+static void safe_rc_set_buffered(SAFEHeader* h, int b) {
+    if (b) h->refs |= SAFE_RC_BUFFERED; else h->refs &= ~SAFE_RC_BUFFERED;
+}
+
 static int safe_rc_sizeclass_for(int total) {
     if (total <= 16)     return 0;
     if (total <= 32)     return 1;
@@ -133,7 +172,11 @@ __attribute__((export_name("safe_rc_retain")))
 int safe_rc_retain(int body) {
     if (body == 0) return 0;
     SAFEHeader* hdr = (SAFEHeader*)(body - 8);
-    if (hdr->refs != SAFE_REFS_IMMORTAL) hdr->refs++;
+    if (hdr->refs != SAFE_REFS_IMMORTAL) {
+        /* Bacon-Rajan: an incremented object is in use, so its color is black. */
+        safe_rc_set_count(hdr, safe_rc_count(hdr) + 1);
+        safe_rc_set_color(hdr, SAFE_COLOR_BLACK);
+    }
     return body;
 }
 
@@ -189,7 +232,10 @@ long long safe_rc_retain_tagged(long long tagged) {
         int body = (int)((unsigned long long)tagged >> 4);
         if (body != 0) {
             SAFEHeader* hdr = (SAFEHeader*)(body - 8);
-            if (hdr->refs != SAFE_REFS_IMMORTAL) hdr->refs++;
+            if (hdr->refs != SAFE_REFS_IMMORTAL) {
+                safe_rc_set_count(hdr, safe_rc_count(hdr) + 1);
+                safe_rc_set_color(hdr, SAFE_COLOR_BLACK);
+            }
         }
     }
     return tagged;
@@ -342,18 +388,289 @@ static void safe_rc_dispose(int body, int kind, int meta) {
     }
 }
 
+/* ===== Bacon-Rajan synchronous cycle collector =====
+ * Ported from the native runtime (safe_runtime.h). Reference counting alone
+ * leaks cyclic graphs (a.next=b; b.next=a); the trial-deletion passes reclaim
+ * them. Runs when the possible-roots buffer fills (SAFE_WASM_GC_THRESHOLD) and
+ * once at program end (safe_collect_cycles called from _start). "Free" here
+ * returns a block to its size-class free list — the WASM analogue of native's
+ * free(). Non-re-entrant (safe_gc_running guard). */
+
+#ifndef SAFE_WASM_GC_THRESHOLD
+#define SAFE_WASM_GC_THRESHOLD 1024
+#endif
+
+/* Return a released block to its size-class free list (children already
+ * handled by the caller — no dispose here). */
+static void safe_gc_free_block(int body, SAFEHeader* hdr) {
+    unsigned char cls = hdr->size_class;
+    if (cls < SAFE_SIZECLASS_COUNT) {
+        int raw = body - 8;
+        *((int*)raw) = __safe_freelist[cls];
+        __safe_freelist[cls] = raw;
+    }
+}
+
+/* Double-buffered possible-roots buffers (linear-memory int arrays of body
+ * offsets). One is active (accepting roots); a collection processes the other,
+ * and they swap each run so roots buffered *during* a collection accumulate
+ * for the next run without mutating the set being iterated — the WASM analogue
+ * of native's snapshot-and-reset. Buffers grow via bump-alloc (the old buffer
+ * is leaked, but growth is logarithmic and reaches a steady state). */
+static int __safe_roots[2]     = {0, 0};
+static int __safe_roots_len[2] = {0, 0};
+static int __safe_roots_cap[2] = {0, 0};
+static int __safe_roots_active = 0;
+static int __safe_gc_running   = 0;
+
+void safe_collect_cycles(void);
+static void safe_gc_children(int body, int op);
+static void safe_gc_dispatch(int body, int op);
+static void safe_mark_gray(int body);
+static void safe_scan_black(int body);
+static void safe_scan(int body);
+static void safe_collect_white(int body);
+
+static int safe_wasm_kind_has_children(int kind) {
+    switch (kind) {
+        /* LIST(1) MAP(2) TUPLE(4) OBJECT(5) ENUM(6) CLOSURE(7) SET(9). */
+        case 1: case 2: case 4: case 5: case 6: case 7: case 9: return 1;
+        default: return 0;
+    }
+}
+
+static void safe_roots_push(int body) {
+    int a = __safe_roots_active;
+    if (__safe_roots_len[a] == __safe_roots_cap[a]) {
+        int ncap = __safe_roots_cap[a] ? __safe_roots_cap[a] * 2 : 256;
+        int nbuf = safe_alloc_export(ncap * 4);
+        for (int i = 0; i < __safe_roots_len[a]; i++)
+            *((int*)(nbuf + i * 4)) = *((int*)(__safe_roots[a] + i * 4));
+        __safe_roots[a] = nbuf;
+        __safe_roots_cap[a] = ncap;
+    }
+    *((int*)(__safe_roots[a] + __safe_roots_len[a] * 4)) = body;
+    __safe_roots_len[a]++;
+}
+
+static void safe_collect_possible_root(int body) {
+    SAFEHeader* hdr = (SAFEHeader*)(body - 8);
+    if (hdr->refs == SAFE_REFS_IMMORTAL) return;
+    if (!safe_wasm_kind_has_children(hdr->kind)) return;
+    if (safe_rc_color(hdr) == SAFE_COLOR_PURPLE) return; /* already a candidate */
+    safe_rc_set_color(hdr, SAFE_COLOR_PURPLE);
+    if (!safe_rc_buffered(hdr)) {
+        safe_rc_set_buffered(hdr, 1);
+        safe_roots_push(body);
+        if (__safe_roots_len[__safe_roots_active] >= SAFE_WASM_GC_THRESHOLD) safe_collect_cycles();
+    }
+}
+
+#define SAFE_GC_TRIAL_DEC 0
+#define SAFE_GC_SCAN      1
+#define SAFE_GC_RESTORE   2
+#define SAFE_GC_COLLECT   3
+
+/* Apply a pass op to a heap-tagged child (no-op for scalars/NULL). */
+static void safe_gc_child(long long tagged, int op) {
+    int tag = (int)(tagged & 0xF);
+    if (!safe_tag_is_heap(tag)) return;
+    int b = (int)((unsigned long long)tagged >> 4);
+    if (b) safe_gc_dispatch(b, op);
+}
+
+/* Walk the heap children of `body`, applying `op` to each. Mirrors the per-kind
+ * layout of safe_rc_dispose — keep the two in sync. MAP has two blocks: the
+ * 8-byte indirection (child = bucket body, by offset) and the bucket body
+ * (children = filled key/value slots). */
+static void safe_gc_children(int body, int op) {
+    SAFEHeader* hdr = (SAFEHeader*)(body - 8);
+    switch (hdr->kind) {
+        case 1: case 9: { /* LIST, SET */
+            int len = *(int*)body;
+            for (int i = 0; i < len; i++)
+                safe_gc_child(*(long long*)(body + 8 + i * 8), op);
+            break;
+        }
+        case 2: { /* MAP */
+            int first = *(int*)body;
+            int cap_word = *(int*)(body + SAFE_MAP_CAP_OFF);
+            if (cap_word == 0 && first != 0) {
+                safe_gc_dispatch(first, op); /* indirection -> bucket body */
+            } else {
+                int cap = cap_word;
+                for (int i = 0; i < cap; i++) {
+                    int bkt = body + SAFE_MAP_HEADER_BYTES + i * SAFE_MAP_BUCKET_BYTES;
+                    if (*(int*)(bkt + SAFE_MAP_STATE_OFF) == SAFE_MAP_STATE_FILLED) {
+                        safe_gc_child(*(long long*)(bkt + SAFE_MAP_KEY_OFF), op);
+                        safe_gc_child(*(long long*)(bkt + SAFE_MAP_VAL_OFF), op);
+                    }
+                }
+            }
+            break;
+        }
+        case 4: { /* TUPLE (bitmap, slots at 8+i*8) */
+            int len = *(int*)body;
+            int limit = len < 16 ? len : 16;
+            for (int i = 0; i < limit; i++)
+                if ((hdr->meta >> i) & 1) safe_gc_child(*(long long*)(body + 8 + i * 8), op);
+            break;
+        }
+        case 5: case 7: { /* OBJECT, CLOSURE (bitmap, slots at 8+i*8) */
+            for (int i = 0; i < 16; i++)
+                if ((hdr->meta >> i) & 1) safe_gc_child(*(long long*)(body + 8 + i * 8), op);
+            break;
+        }
+        case 6: { /* ENUM (fieldcount at 8, payload at 12+i*8) */
+            int fieldCount = *(int*)(body + 8);
+            int limit = fieldCount < 16 ? fieldCount : 16;
+            for (int i = 0; i < limit; i++)
+                if ((hdr->meta >> i) & 1) safe_gc_child(*(long long*)(body + 12 + i * 8), op);
+            break;
+        }
+        default: break;
+    }
+}
+
+/* MarkRoots: gray each node, trial-decrementing children's counts. */
+static void safe_gc_trial_dec(int body) {
+    if (!body) return;
+    SAFEHeader* h = (SAFEHeader*)(body - 8);
+    if (h->refs == SAFE_REFS_IMMORTAL) return;
+    if (safe_rc_count(h) > 0) safe_rc_set_count(h, safe_rc_count(h) - 1);
+    safe_mark_gray(body);
+}
+static void safe_mark_gray(int body) {
+    if (!body) return;
+    SAFEHeader* h = (SAFEHeader*)(body - 8);
+    if (h->refs == SAFE_REFS_IMMORTAL) return;
+    if (safe_rc_color(h) != SAFE_COLOR_GRAY) {
+        safe_rc_set_color(h, SAFE_COLOR_GRAY);
+        safe_gc_children(body, SAFE_GC_TRIAL_DEC);
+    }
+}
+
+/* ScanRoots: restore counts of externally reachable (black) subgraphs; leave
+ * true garbage white. */
+static void safe_gc_restore(int body) {
+    if (!body) return;
+    SAFEHeader* h = (SAFEHeader*)(body - 8);
+    if (h->refs == SAFE_REFS_IMMORTAL) return;
+    safe_rc_set_count(h, safe_rc_count(h) + 1);
+    if (safe_rc_color(h) != SAFE_COLOR_BLACK) safe_scan_black(body);
+}
+static void safe_scan_black(int body) {
+    if (!body) return;
+    SAFEHeader* h = (SAFEHeader*)(body - 8);
+    if (h->refs == SAFE_REFS_IMMORTAL) return;
+    safe_rc_set_color(h, SAFE_COLOR_BLACK);
+    safe_gc_children(body, SAFE_GC_RESTORE);
+}
+static void safe_scan(int body) {
+    if (!body) return;
+    SAFEHeader* h = (SAFEHeader*)(body - 8);
+    if (h->refs == SAFE_REFS_IMMORTAL) return;
+    if (safe_rc_color(h) == SAFE_COLOR_GRAY) {
+        if (safe_rc_count(h) > 0) {
+            safe_scan_black(body);
+        } else {
+            safe_rc_set_color(h, SAFE_COLOR_WHITE);
+            safe_gc_children(body, SAFE_GC_SCAN);
+        }
+    }
+}
+
+/* CollectRoots: free the white cycle members. */
+static void safe_collect_white(int body) {
+    if (!body) return;
+    SAFEHeader* h = (SAFEHeader*)(body - 8);
+    if (h->refs == SAFE_REFS_IMMORTAL) return;
+    if (safe_rc_color(h) == SAFE_COLOR_WHITE && !safe_rc_buffered(h)) {
+        safe_rc_set_color(h, SAFE_COLOR_BLACK); /* set before recursion so a cycle frees once */
+        safe_gc_children(body, SAFE_GC_COLLECT);
+        safe_gc_free_block(body, h);
+    }
+}
+
+static void safe_gc_dispatch(int body, int op) {
+    switch (op) {
+        case SAFE_GC_TRIAL_DEC: safe_gc_trial_dec(body); break;
+        case SAFE_GC_SCAN:      safe_scan(body); break;
+        case SAFE_GC_RESTORE:   safe_gc_restore(body); break;
+        case SAFE_GC_COLLECT:   safe_collect_white(body); break;
+    }
+}
+
+__attribute__((export_name("safe_collect_cycles")))
+void safe_collect_cycles(void) {
+    if (__safe_gc_running) return;
+    __safe_gc_running = 1;
+
+    /* Flip active: roots buffered while disposing corpses below accumulate in
+     * the other buffer for the next run, leaving the processed set stable. */
+    int a = __safe_roots_active;
+    int spare = 1 - a;
+    __safe_roots_len[spare] = 0;
+    __safe_roots_active = spare;
+
+    int base = __safe_roots[a];
+    int n = __safe_roots_len[a];
+
+    /* MarkRoots: gray every still-purple, still-referenced root; drop the rest,
+     * freeing any that refcounting already reduced to a black/count-0 corpse. */
+    int kept = 0;
+    for (int i = 0; i < n; i++) {
+        int s = *((int*)(base + i * 4));
+        SAFEHeader* h = (SAFEHeader*)(s - 8);
+        if (safe_rc_color(h) == SAFE_COLOR_PURPLE && safe_rc_count(h) > 0) {
+            safe_mark_gray(s);
+            *((int*)(base + kept * 4)) = s;
+            kept++;
+        } else {
+            safe_rc_set_buffered(h, 0);
+            if (safe_rc_color(h) == SAFE_COLOR_BLACK && safe_rc_count(h) == 0) {
+                safe_rc_dispose(s, h->kind, h->meta);
+                safe_gc_free_block(s, h);
+            }
+        }
+    }
+    n = kept;
+
+    /* ScanRoots. */
+    for (int i = 0; i < n; i++) safe_scan(*((int*)(base + i * 4)));
+
+    /* CollectRoots: free the white cycles. */
+    for (int i = 0; i < n; i++) {
+        int s = *((int*)(base + i * 4));
+        safe_rc_set_buffered((SAFEHeader*)(s - 8), 0);
+        safe_collect_white(s);
+    }
+
+    __safe_roots_len[a] = 0;
+    __safe_gc_running = 0;
+}
+
 static void safe_rc_release_internal(int body) {
     if (body == 0) return;
     SAFEHeader* hdr = (SAFEHeader*)(body - 8);
     if (hdr->refs == SAFE_REFS_IMMORTAL) return;
-    if (--hdr->refs == 0) {
-        safe_rc_dispose(body, hdr->kind, hdr->meta);
-        unsigned char cls = hdr->size_class;
-        if (cls < SAFE_SIZECLASS_COUNT) {
-            int raw = body - 8;
-            *((int*)raw) = __safe_freelist[cls];
-            __safe_freelist[cls] = raw;
+    unsigned int count = safe_rc_count(hdr);
+    if (count == 0) return; /* defensive — already released */
+    count -= 1;
+    safe_rc_set_count(hdr, count);
+    if (count == 0) {
+        if (safe_rc_buffered(hdr)) {
+            /* Sitting in the roots buffer; freeing now would dangle that entry.
+             * Leave a black/count-0 corpse for MarkRoots to dispose and free. */
+            safe_rc_set_color(hdr, SAFE_COLOR_BLACK);
+        } else {
+            safe_rc_dispose(body, hdr->kind, hdr->meta);
+            safe_gc_free_block(body, hdr);
         }
+    } else {
+        /* A dropped ref to a container could be the last external pointer
+         * keeping a cycle alive — buffer it as a possible cycle root. */
+        safe_collect_possible_root(body);
     }
 }
 
@@ -817,6 +1134,10 @@ static long long list_get(int ptr, int idx) {
 // N retains + N releases per grow.
 static int list_append(int ptr, long long val) {
     int len = *(int*)ptr;
+    if (len >= SAFE_MAX_LIST_SIZE) {
+        fprintf(stderr, "list size exceeds maximum of %d\n", SAFE_MAX_LIST_SIZE);
+        __builtin_trap();
+    }
     int cap = *(int*)(ptr + 4);
     if (len < cap) {
         *(long long*)(ptr + 8 + len * 8) = val;
@@ -825,7 +1146,9 @@ static int list_append(int ptr, long long val) {
     }
     int newcap = cap < 4 ? 8 : cap * 2;
     SAFEHeader* oldhdr = (SAFEHeader*)(ptr - 8);
-    int unique = (oldhdr->refs == 1);
+    /* Unique-owner check must read the packed count, not the raw refs word —
+     * a buffered/colored block has high bits set (see safe_rc accessors). */
+    int unique = (safe_rc_count(oldhdr) == 1);
     int newptr = safe_rc_alloc(8 + newcap * 8, oldhdr->kind, oldhdr->meta);
     /* safe_rc_alloc may have changed `ptr`'s refs? No — it only allocates.
      * But re-read the header pointer in case the allocator relocated
@@ -2566,6 +2889,10 @@ void safe_list_set(int list, int index, long long value) {
 
 __attribute__((export_name("safe_list_append")))
 int safe_list_append(int list, long long value) {
+    if (*(int*)list >= SAFE_MAX_LIST_SIZE) {
+        fprintf(stderr, "list size exceeds maximum of %d\n", SAFE_MAX_LIST_SIZE);
+        __builtin_trap();
+    }
     /* Retain heap-tagged value so the list owns its reference; dispose
      * iterates elements and releases each. */
     safe_rc_retain_tagged(value);
@@ -2577,7 +2904,8 @@ int safe_list_append(int list, long long value) {
     }
     int newcap = (cap < 4) ? 8 : cap * 2;
     SAFEHeader* oldhdr = (SAFEHeader*)(list - 8);
-    int unique = (oldhdr->refs == 1);
+    /* Unique-owner check reads the packed count, not the raw refs word. */
+    int unique = (safe_rc_count(oldhdr) == 1);
     int nl = safe_rc_alloc(8 + newcap * 8, oldhdr->kind, oldhdr->meta);
     *(int*)nl = len + 1; *(int*)(nl+4) = newcap;
     if (unique) {

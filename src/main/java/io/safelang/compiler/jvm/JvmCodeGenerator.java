@@ -6,6 +6,7 @@ import io.safelang.ast.AssertNode;
 import io.safelang.ast.AssignmentNode;
 import io.safelang.ast.BinaryExpressionNode;
 import io.safelang.ast.CaseExpressionNode;
+import io.safelang.ast.DestructureNode;
 import io.safelang.ast.DoExpressionNode;
 import io.safelang.ast.EnumDeclarationNode;
 import io.safelang.ast.EnumPatternNode;
@@ -88,11 +89,20 @@ final class JvmCodeGenerator {
   private String module; // null while compiling the main program; module name otherwise
   private boolean isTopLevel; // true only while compiling main's top-level statements
   private int lambdaCount;
+  // AOT capability set, fixed at build time. Default grants everything; a restricted build refuses
+  // to emit a call to a builtin whose capability was not granted (so the jar cannot use it).
+  private io.safelang.runtime.Capabilities capabilities = io.safelang.runtime.Capabilities.all();
 
   JvmCodeGenerator(final String name, final ModuleRegistry registry) {
     this.name = name;
     this.registry = registry;
     this.writer = new ClassWriter(name, "java/lang/Object");
+  }
+
+  void setCapabilities(final io.safelang.runtime.Capabilities value) {
+    if (value != null) {
+      this.capabilities = value;
+    }
   }
 
   private static String descriptor(final int arity) {
@@ -156,6 +166,11 @@ final class JvmCodeGenerator {
     runtime("nothing", "()" + VALUE);
     emitter.storeReference(slot);
 
+    // Bound recursion depth (matches interpreter/VM/C). enter() at the prologue, leave() at the
+    // single epilogue — same shape as the decreases push/pop below.
+    emitter.loadConstant(pool.string(function.name()));
+    runtime("enter", "(Ljava/lang/String;)V");
+
     if (function.hasRequires()) {
       value(function.requires());
       emitter.loadConstant(pool.string(function.name()));
@@ -183,6 +198,7 @@ final class JvmCodeGenerator {
       emitter.loadConstant(pool.string(function.name()));
       runtime("popMeasure", "(Ljava/lang/String;)V");
     }
+    runtime("leave", "()V");
     emitter.loadReference(slot);
     emitter.returnReference();
     writer.method(
@@ -266,6 +282,20 @@ final class JvmCodeGenerator {
           runtime("nothing", "()" + VALUE);
         }
         emitter.storeReference(define(declaration.name()));
+      }
+      case DestructureNode destructure -> {
+        // Evaluate the tuple once into a temp, then bind each name to element i (tuple[i]).
+        value(destructure.initializer());
+        final var tuple = emitter.reserve(1);
+        emitter.storeReference(tuple);
+        final var names = destructure.names();
+        for (int i = 0; i < names.size(); i++) {
+          emitter.loadReference(tuple);
+          emitter.loadConstant2(pool.longValue(i));
+          runtime("integer", "(J)" + VALUE);
+          runtime("index", "(" + VALUE + VALUE + ")" + VALUE);
+          emitter.storeReference(define(names.get(i)));
+        }
       }
       case AssignmentNode assignment -> {
         if (assignment.parts().size() != 1) {
@@ -773,6 +803,16 @@ final class JvmCodeGenerator {
   }
 
   private void builtin(final String name, final List<ASTNode> arguments) {
+    final var capability = io.safelang.runtime.BuiltinRegistry.capability(name);
+    if (capability != null && !capabilities.granted(capability)) {
+      throw new io.safelang.SAFEException(
+          "builtin '"
+              + name
+              + "' requires capability "
+              + capability
+              + ", which this build did not grant; rebuild with --allow "
+              + capability.name().toLowerCase());
+    }
     emitter.loadConstant(pool.string(name));
     array(arguments);
     runtime("call", "(Ljava/lang/String;[" + VALUE + ")" + VALUE);

@@ -9,6 +9,9 @@ public final class BytecodeCompilerService implements SafeCompiler {
 
   @Override
   public SafeCompileResult compile(final CompileRequest request) throws Exception {
+    // Bytecode capability enforcement is at VM runtime (the .safeb is portable and re-run under the
+    // policy passed to `vm`), so the compiler itself does not gate. Self-executing artifacts (JVM
+    // jar, native C, WASM) gate at compile time instead.
     final var compiler = new BytecodeCompiler();
     compiler.setRegistry(request.registry());
     final var module = compiler.compile(request.program());

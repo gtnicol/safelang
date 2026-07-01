@@ -48,6 +48,12 @@ public sealed interface SAFEValue
   int MAX_TUPLE_SIZE = 64;
   int MAX_LIST_SIZE = 10_000_000;
 
+  // Upper bound on a `while (cond) bound (N)` loop's declared iteration count. The bound makes a
+  // while loop terminating, but an unbounded N (billions/trillions) still lets a guest burn the
+  // host
+  // CPU. This caps the declared bound so a single loop cannot request pathological work.
+  long MAX_WHILE_BOUND = 1_000_000_000L;
+
   // ------------------------------------------------------------------
   // Factories
   // ------------------------------------------------------------------
@@ -92,7 +98,7 @@ public sealed interface SAFEValue
   }
 
   static SAFEValue ofMap(final Map<SAFEValue, SAFEValue> map) {
-    return new MapValue(map != null ? new LinkedHashMap<>(map) : new LinkedHashMap<>());
+    return new MapValue(PersistentMap.from(map));
   }
 
   static SAFEValue ofObject(final String type, final Map<String, SAFEValue> fields) {
@@ -1039,11 +1045,11 @@ public sealed interface SAFEValue
   }
 
   final class MapValue implements SAFEValue {
-    // Non-final: setEntry swaps in a freshly built LinkedHashMap.
-    private Map<SAFEValue, SAFEValue> map;
+    // Non-final: setEntry swaps in a new PersistentMap version (O(log n) structural sharing).
+    private PersistentMap map;
 
     MapValue(final Map<SAFEValue, SAFEValue> map) {
-      this.map = map;
+      this.map = map instanceof PersistentMap persistent ? persistent : PersistentMap.from(map);
     }
 
     @Override
@@ -1081,9 +1087,7 @@ public sealed interface SAFEValue
 
     @Override
     public void setEntry(final SAFEValue key, final SAFEValue value) {
-      final var next = new LinkedHashMap<>(map);
-      next.put(key, value);
-      this.map = next;
+      this.map = map.with(key, value);
     }
 
     @Override

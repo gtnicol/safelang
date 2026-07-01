@@ -17,6 +17,13 @@ interface CBuiltinContext {
   /** Best-effort SAFE type inference. */
   String infer(ASTNode node);
 
+  /**
+   * Whether {@code node} produces a FRESH, OWNED heap value (a +1 the receiver must release) — a
+   * heap-RC type that is a fresh producer (call / constructor / map read), not a borrowed alias.
+   * Used to release throwaway heap temporaries passed to a borrowing builtin.
+   */
+  boolean isFreshHeap(ASTNode node);
+
   /** Wrap a raw C value as a {@code SAFEValue} union of the given SAFE type. */
   String wrap(String code, String type);
 

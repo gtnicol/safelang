@@ -703,48 +703,198 @@ class TerminationChecker {
       return;
     }
 
-    for (final var call : calls) {
-      final var arguments = call.arguments();
-      var decreased = false;
-      for (int i = 0; i < parameters.size() && i < arguments.size(); i++) {
-        final var type = parameters.get(i).type().name();
-        if (!"int".equals(type) && !"uint".equals(type)) {
-          continue;
-        }
-        final var argument = arguments.get(i);
-        final var parameter = parameters.get(i).name();
-        if (isDecreasing(argument, parameter)) {
-          decreased = true;
-        }
-        // else: expression references param in unknown way (e.g., n*2) — not decreasing
-      }
-      if (!decreased) {
-        final var checked = new ArrayList<String>();
-        for (int i = 0; i < arguments.size() && i < parameters.size(); i++) {
-          if ("int".equals(parameters.get(i).type().name())
-              || "uint".equals(parameters.get(i).type().name())) {
-            checked.add(parameters.get(i).name());
-          }
-        }
-        error(
-            "Self-recursive call to '"
-                + name
-                + "' does not decrease any argument (checked: "
-                + checked
-                + ")",
-            call);
+    // Compute the measure set: int/uint parameters that strictly decrease on EVERY self-call.
+    // Requiring a strict decrease on every call makes the parameter monotone (it never grows on any
+    // path), so a measure is a genuine bound on the recursion — not merely "some argument shrank
+    // while another grew unbounded".
+    final var numeric = new ArrayList<Integer>();
+    for (int i = 0; i < parameters.size(); i++) {
+      final var type = parameters.get(i).type().name();
+      if ("int".equals(type) || "uint".equals(type)) {
+        numeric.add(i);
       }
     }
+    final var measures = new LinkedHashSet<String>();
+    for (final var i : numeric) {
+      var decreasesEverywhere = true;
+      for (final var call : calls) {
+        final var arguments = call.arguments();
+        if (i >= arguments.size() || !isDecreasing(arguments.get(i), parameters.get(i).name())) {
+          decreasesEverywhere = false;
+          break;
+        }
+      }
+      if (decreasesEverywhere) {
+        measures.add(parameters.get(i).name());
+      }
+    }
+    if (measures.isEmpty()) {
+      final var checked = new ArrayList<String>();
+      for (final var i : numeric) {
+        checked.add(parameters.get(i).name());
+      }
+      error(
+          "Self-recursive function '"
+              + name
+              + "' has no parameter that strictly decreases on every recursive call (checked: "
+              + checked
+              + "). Add a decreases clause if termination relies on another measure.",
+          function);
+      return;
+    }
 
-    // Verify base case exists: the function must contain a conditional (if/case)
-    // where at least one branch does NOT recursively call the function
+    // Verify a base case exists AND that it is guarded by a decreasing measure. Without the latter
+    // link, a measure could shrink forever while the recursion is gated by an unrelated parameter
+    // that grows without bound (e.g. foo(n+1, m-1) guarded by n) — the static-bypass this closes.
     if (!hasBaseCase(function.body(), name)) {
       error(
           "Self-recursive function '"
               + name
               + "' has no base case (missing non-recursive branch in conditional)",
           function);
+    } else if (!baseCaseGuardedBy(function.body(), name, measures)) {
+      error(
+          "Self-recursive function '"
+              + name
+              + "': the decreasing measure "
+              + measures
+              + " is not tested by the base case. The terminating condition must check a parameter"
+              + " that strictly decreases; otherwise add a decreases clause.",
+          function);
     }
+  }
+
+  /**
+   * True when some base case (non-recursive branch) is guarded by a condition referencing a
+   * measure.
+   */
+  private boolean baseCaseGuardedBy(
+      final List<ASTNode> body, final String name, final Set<String> measures) {
+    for (final var node : body) {
+      if (baseCaseNodeGuardedBy(node, name, measures)) return true;
+    }
+    return false;
+  }
+
+  private boolean baseCaseNodeGuardedBy(
+      final ASTNode node, final String name, final Set<String> measures) {
+    if (node instanceof ReturnNode r) {
+      return r.hasExpression() && baseCaseNodeGuardedBy(r.expression(), name, measures);
+    }
+    if (node instanceof ExpressionStatementNode e) {
+      return baseCaseNodeGuardedBy(e.expression(), name, measures);
+    }
+    if (node instanceof IfExpressionNode i) {
+      if (AstReferences.contains(i.condition(), name)) return false;
+      final var left = AstReferences.contains(i.then(), name);
+      final var right = i.hasOtherwise() && AstReferences.contains(i.otherwise(), name);
+      if (!left && isTriviallyFalse(i.condition())) return false;
+      if (!right && i.hasOtherwise() && isTriviallyTrue(i.condition())) return false;
+      if (left && right) return false; // no non-recursive branch
+      // The non-recursive (base) branch is reached only when the condition takes the value that
+      // does
+      // NOT select the recursive branch: if `then` recurses, the base is `else` (condition false);
+      // if `else` recurses, the base is `then` (condition true). A decreasing measure must provably
+      // drive the condition to that value — checked polarity-aware so a `||`/`&&` guard cannot pass
+      // on a single measure-mentioning disjunct while another operand grows unbounded.
+      final var baseValue = right && !left;
+      if (gates(i.condition(), baseValue, measures)) return true;
+      return i.hasOtherwise() && baseCaseNodeGuardedBy(i.otherwise(), name, measures);
+    }
+    if (node instanceof CaseExpressionNode c) {
+      if (AstReferences.contains(c.subject(), name)) return false;
+      final var subjectGuards = referencesAny(c.subject(), measures);
+      for (final var branch : c.branches()) {
+        if (branch.hasGuard() && isTriviallyFalse(branch.guard())) continue;
+        if (branch.hasGuard() && AstReferences.contains(branch.guard(), name)) continue;
+        if (!AstReferences.contains(branch.result(), name)) {
+          // A base-case branch — its reachability is gated by matching the subject (and any guard).
+          if (subjectGuards || (branch.hasGuard() && referencesAny(branch.guard(), measures))) {
+            return true;
+          }
+        }
+      }
+      return c.hasFallback() && !AstReferences.contains(c.fallback(), name) && subjectGuards;
+    }
+    if (node instanceof DoExpressionNode d) {
+      for (final var statement : d.statements()) {
+        if (baseCaseNodeGuardedBy(statement, name, measures)) return true;
+      }
+      return baseCaseNodeGuardedBy(d.expression(), name, measures);
+    }
+    return false;
+  }
+
+  private boolean referencesAny(final ASTNode node, final Set<String> names) {
+    for (final var n : names) {
+      if (mentions(node, n)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * True iff a strictly-decreasing measure provably drives {@code node} to {@code baseValue} (the
+   * boolean at which the base case is reached). Polarity-aware over boolean connectives so a
+   * disjunctive guard cannot pass on one measure-mentioning disjunct while another operand grows
+   * without bound: for {@code A || B} to become {@code false}, BOTH operands must be driven false;
+   * for {@code A && B} to become {@code false}, EITHER suffices (and the duals when {@code
+   * baseValue} is true). An atomic comparison gates iff it tests a decreasing measure.
+   * Conservative: anything not provably gating returns false, so the function is rejected (the user
+   * adds a {@code decreases} clause) rather than wrongly accepted.
+   */
+  private boolean gates(final ASTNode node, final boolean baseValue, final Set<String> measures) {
+    if (node instanceof UnaryExpressionNode u && "!".equals(u.operator())) {
+      return gates(u.operand(), !baseValue, measures);
+    }
+    if (node instanceof BinaryExpressionNode b) {
+      if ("||".equals(b.operator())) {
+        return baseValue
+            ? gates(b.left(), true, measures) || gates(b.right(), true, measures)
+            : gates(b.left(), false, measures) && gates(b.right(), false, measures);
+      }
+      if ("&&".equals(b.operator())) {
+        return baseValue
+            ? gates(b.left(), true, measures) && gates(b.right(), true, measures)
+            : gates(b.left(), false, measures) || gates(b.right(), false, measures);
+      }
+    }
+    return referencesAny(node, measures);
+  }
+
+  /**
+   * True if the local variable {@code name} is referenced in {@code node}. Unlike {@link
+   * AstReferences#contains} (which finds <em>function calls</em>), this finds variable uses —
+   * needed to check that a base-case guard like {@code n <= 0} actually tests the decreasing
+   * measure.
+   */
+  private boolean mentions(final ASTNode node, final String name) {
+    if (node instanceof VariableReferenceNode v) {
+      return v.prefix() == null && v.parts().size() == 1 && v.parts().get(0).equals(name);
+    }
+    if (node instanceof BinaryExpressionNode b) {
+      return mentions(b.left(), name) || mentions(b.right(), name);
+    }
+    if (node instanceof UnaryExpressionNode u) {
+      return mentions(u.operand(), name);
+    }
+    if (node instanceof FunctionCallNode c) {
+      for (final var argument : c.arguments()) {
+        if (mentions(argument, name)) return true;
+      }
+      return false;
+    }
+    if (node instanceof IfExpressionNode i) {
+      return mentions(i.condition(), name)
+          || mentions(i.then(), name)
+          || (i.hasOtherwise() && mentions(i.otherwise(), name));
+    }
+    if (node instanceof FieldAccessNode f) {
+      return mentions(f.receiver(), name);
+    }
+    if (node instanceof IndexAccessNode ix) {
+      return mentions(ix.container(), name) || mentions(ix.index(), name);
+    }
+    return false;
   }
 
   private boolean hasBaseCase(final List<ASTNode> body, final String name) {

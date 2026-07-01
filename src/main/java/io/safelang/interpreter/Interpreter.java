@@ -20,6 +20,7 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
   private final Map<String, Set<String>> selections = new HashMap<>();
   private final Map<Integer, FileHandle> handles = new HashMap<>();
   private final Map<Integer, BinaryFileHandle> binaries = new HashMap<>();
+  private final Map<Integer, io.safelang.runtime.StreamHandle> streams = new HashMap<>();
   private final Map<String, Deque<Long>> measures = new HashMap<>();
   private final AtomicInteger counter = new AtomicInteger(0);
   private final Random[] random = {new Random()};
@@ -31,16 +32,46 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
   private ModuleRegistry registry;
   private Writer output;
 
+  // Bound recursion so deeply nested (but terminating) user recursion traps with a catchable
+  // InterpreterException instead of overflowing the JVM stack with a raw StackOverflowError.
+  // Matches the bytecode VM's MAX_DEPTH and the C runtime's SAFE_MAX_RECURSION.
+  private static final int MAX_DEPTH = 1000;
+  private int callDepth;
+
+  private final io.safelang.runtime.HostPolicy policy;
+
   public Interpreter() {
     this(List.of());
   }
 
   public Interpreter(final List<String> arguments) {
+    // Direct/CLI construction is trusted local use — grant everything by default. The embedding
+    // paths (script engine, SafeRuntime) pass an explicit, deny-by-default policy.
+    this(arguments, io.safelang.runtime.HostPolicy.trusted());
+  }
+
+  public Interpreter(
+      final List<String> arguments, final io.safelang.runtime.Capabilities capabilities) {
+    this(arguments, io.safelang.runtime.HostPolicy.of(capabilities));
+  }
+
+  public Interpreter(final List<String> arguments, final io.safelang.runtime.HostPolicy policy) {
     this.root = new Environment();
     this.arguments = arguments != null ? arguments : List.of();
+    this.policy = policy != null ? policy : io.safelang.runtime.HostPolicy.trusted();
     frames.push(new Frame(root, root, 0));
     builtins();
-    BuiltinRegistry.variables().forEach(root::define);
+    // Define system variables, skipping any whose capability this policy did not grant (the
+    // host-dependent OS/ARCH/OS_VERSION/PLATFORM require ENVIRONMENT). An ungranted reference then
+    // fails as an undefined variable, matching how ungranted builtins are denied.
+    BuiltinRegistry.variables()
+        .forEach(
+            (name, value) -> {
+              final var capability = BuiltinRegistry.variableCapability(name);
+              if (capability == null || this.policy.capabilities().granted(capability)) {
+                root.define(name, value);
+              }
+            });
   }
 
   private Environment environment() {
@@ -113,7 +144,23 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
       final List<SAFEValue> args,
       final String displayName) {
     reject(displayName, args);
+    if (++callDepth > MAX_DEPTH) {
+      callDepth--;
+      throw new InterpreterException(
+          "Maximum call depth exceeded (" + MAX_DEPTH + ") in: " + displayName);
+    }
+    try {
+      return invokeBody(declaration, scope, args, displayName);
+    } finally {
+      callDepth--;
+    }
+  }
 
+  private SAFEValue invokeBody(
+      final FunctionDeclarationNode declaration,
+      final Environment scope,
+      final List<SAFEValue> args,
+      final String displayName) {
     // Evaluate requires contract if present.
     if (declaration.hasRequires()) {
       enter(scope);
@@ -181,11 +228,21 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
 
   private void builtins() {
     BuiltinRegistration.registerAll(
-        executors, () -> output, scanner, random, handles, binaries, counter, arguments);
+        executors,
+        () -> output,
+        scanner,
+        random,
+        handles,
+        binaries,
+        streams,
+        counter,
+        arguments,
+        policy);
   }
 
   /** Interprets a program AST. */
   public SAFEValue interpret(final ProgramNode program) {
+    io.safelang.runtime.HostCallback.set((function, args) -> apply(function.asClosure(), args));
     try {
       return program.accept(this);
     } finally {
@@ -194,7 +251,8 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
   }
 
   private void cleanup() {
-    BuiltinRegistration.closeHandles(handles, binaries);
+    io.safelang.runtime.HostCallback.clear();
+    BuiltinRegistration.closeHandles(handles, binaries, streams);
   }
 
   @Override
@@ -370,7 +428,9 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
 
   @Override
   public SAFEValue visitLambda(final LambdaNode node) {
-    return SAFEValue.ofFunction(Closure.lambda(node, environment().snapshot()));
+    // Capture only the free variables the body references (not the entire lexical scope).
+    final var free = io.safelang.ast.FreeVariables.of(node);
+    return SAFEValue.ofFunction(Closure.lambda(node, environment().snapshot(free)));
   }
 
   @Override
@@ -545,6 +605,10 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
     final var max = node.bound().accept(this).asInt();
     if (max < 0) {
       throw new InterpreterException("While loop bound must be non-negative, got " + max);
+    }
+    if (max > SAFEValue.MAX_WHILE_BOUND) {
+      throw new InterpreterException(
+          "While loop bound " + max + " exceeds the maximum of " + SAFEValue.MAX_WHILE_BOUND);
     }
     final var scope = environment().child();
     enter(scope);
@@ -879,7 +943,8 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
       if (parts.size() == 1) {
         final var function = environment().function(first);
         if (function != null) {
-          return SAFEValue.ofFunction(Closure.named(first, function, environment().snapshot()));
+          final var free = io.safelang.ast.FreeVariables.of(function.parameters(), function.body());
+          return SAFEValue.ofFunction(Closure.named(first, function, environment().snapshot(free)));
         }
       }
       throw exception;
@@ -1114,7 +1179,16 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
     for (final var arg : arguments) {
       args.add(arg.accept(this));
     }
+    return apply(closure, args);
+  }
 
+  /**
+   * Apply a closure to already-evaluated argument values. Split from {@link #closure} so a
+   * higher-order builtin (e.g. {@code http:serve}) can invoke a SAFE function via {@link
+   * io.safelang.runtime.HostCallback} without going back through AST argument nodes.
+   */
+  SAFEValue apply(final Closure closure, final List<SAFEValue> evaluated) {
+    final var args = new ArrayList<SAFEValue>(evaluated);
     if (closure.isNamed()) {
       // Named function reference — call through the captured environment
       final var function = closure.declaration();
@@ -1216,7 +1290,7 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
         for (final ASTNode arg : node.arguments()) {
           variantArgs.add(arg.accept(this));
         }
-        return SAFEValue.ofEnum(match.enumName(), name, variantArgs);
+        return SAFEValue.ofEnum(match.name(), name, variantArgs);
       }
       // Qualified call to a module-owned builtin with no SAFE trampoline (e.g. std:range):
       // dispatch directly to the builtin, mirroring the unqualified path.
@@ -1319,7 +1393,7 @@ public class Interpreter implements ASTVisitor<SAFEValue> {
   }
 
   /** Enum variant with its owning enum's name, for qualified construction (mod:Ok). */
-  private record QualifiedVariant(String enumName, EnumVariantNode variant) {}
+  private record QualifiedVariant(String name, EnumVariantNode variant) {}
 
   private static final class Frame {
     final int depth;

@@ -106,16 +106,56 @@ static inline size_t safe_sizeclass_bytes(int cls) {
  * string literals and other program-lifetime values. */
 #define SAFE_REFS_IMMORTAL ((uint32_t)~0u)
 
+/* ===== Cycle-collector color state (Bacon-Rajan), packed into refs =====
+ * The native runtime adds a synchronous trial-deletion cycle collector so
+ * cyclic object graphs (a.next=b; b.next=a) don't leak. The refcount word is
+ * partitioned: [31:30]=color, [29]=buffered, [28:0]=count. SAFE_REFS_IMMORTAL
+ * (~0u) stays an exact-compare sentinel — a live object's count never reaches
+ * 0x1FFFFFFF, so it never collides. WASM has its own header/runtime and is
+ * unaffected by these. */
+#define SAFE_RC_COLOR_SHIFT 30
+#define SAFE_RC_COLOR_MASK  (3u << SAFE_RC_COLOR_SHIFT)
+#define SAFE_RC_BUFFERED    (1u << 29)
+#define SAFE_RC_COUNT_MASK  ((1u << 29) - 1u)
+
+#define SAFE_COLOR_BLACK  0u  /* in use or free */
+#define SAFE_COLOR_GRAY   1u  /* possible member of a cycle (being marked) */
+#define SAFE_COLOR_WHITE  2u  /* member of a garbage cycle */
+#define SAFE_COLOR_PURPLE 3u  /* possible root of a cycle */
+
+static inline uint32_t safe_rc_count(SAFEHeader* h) {
+    return h->refs & SAFE_RC_COUNT_MASK;
+}
+static inline void safe_rc_set_count(SAFEHeader* h, uint32_t c) {
+    h->refs = (h->refs & ~SAFE_RC_COUNT_MASK) | (c & SAFE_RC_COUNT_MASK);
+}
+static inline uint32_t safe_rc_color(SAFEHeader* h) {
+    return (h->refs & SAFE_RC_COLOR_MASK) >> SAFE_RC_COLOR_SHIFT;
+}
+static inline void safe_rc_set_color(SAFEHeader* h, uint32_t color) {
+    h->refs = (h->refs & ~SAFE_RC_COLOR_MASK) | ((color << SAFE_RC_COLOR_SHIFT) & SAFE_RC_COLOR_MASK);
+}
+static inline int safe_rc_buffered(SAFEHeader* h) {
+    return (h->refs & SAFE_RC_BUFFERED) != 0;
+}
+static inline void safe_rc_set_buffered(SAFEHeader* h, int b) {
+    if (b) h->refs |= SAFE_RC_BUFFERED; else h->refs &= ~SAFE_RC_BUFFERED;
+}
+
 /* Locate the header given a body pointer. */
 static inline SAFEHeader* safe_header(void* body) {
     return ((SAFEHeader*)body) - 1;
 }
 
-/* Increment refcount. NULL- and immortal-safe. Returns `body` for chaining. */
+/* Increment refcount. NULL- and immortal-safe. Returns `body` for chaining.
+ * Bacon-Rajan: an incremented object is in use, so its color becomes black. */
 static inline void* safe_retain(void* body) {
     if (body) {
         SAFEHeader* hdr = safe_header(body);
-        if (hdr->refs != SAFE_REFS_IMMORTAL) hdr->refs++;
+        if (hdr->refs != SAFE_REFS_IMMORTAL) {
+            safe_rc_set_count(hdr, safe_rc_count(hdr) + 1);
+            safe_rc_set_color(hdr, SAFE_COLOR_BLACK);
+        }
     }
     return body;
 }

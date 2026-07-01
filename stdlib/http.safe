@@ -1,0 +1,55 @@
+module http;
+
+// An incoming request handed to a server handler.
+public type Request {
+    public const string method;
+    public const string path;
+    public const map<string, string> headers;
+    public const string body;
+}
+
+// A response: returned by a handler, or produced by the client.
+public type Response {
+    public const int status;
+    public const string body;
+    public const map<string, string> headers;
+}
+
+public enum HttpResult { Ok(Response), Err(string) }
+
+// Build a response with no extra headers.
+public Response response(int status, string body) {
+    return Response { status: status, body: body, headers: {} };
+}
+
+// Build a response with custom headers.
+public Response response_with(int status, string body, map<string, string> headers) {
+    return Response { status: status, body: body, headers: headers };
+}
+
+// Client
+public HttpResult get(string url) { return http_get(url); }
+public HttpResult post(string url, string body) { return http_post(url, body); }
+public HttpResult request(string method, string url, map<string, string> headers, string body) {
+    return http_request(method, url, headers, body);
+}
+
+// Server. One primitive `http_serve(port, handler, stop, cert, key)` underlies four forms:
+//   stop = fn(n) -> false  ==> run forever
+//   cert/key = ""          ==> plaintext (otherwise PEM cert + PKCS#8 PEM key ==> TLS)
+public void serve(int port, fn(Request) -> Response handler) {
+    http_serve(port, handler, fn(n) -> false, "", "");
+}
+
+public void serve_until(int port, fn(Request) -> Response handler, fn(int) -> boolean stop) {
+    http_serve(port, handler, stop, "", "");
+}
+
+public void serve_tls(int port, fn(Request) -> Response handler, string cert, string key) {
+    http_serve(port, handler, fn(n) -> false, cert, key);
+}
+
+public void serve_until_tls(int port, fn(Request) -> Response handler,
+                            fn(int) -> boolean stop, string cert, string key) {
+    http_serve(port, handler, stop, cert, key);
+}

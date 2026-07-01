@@ -75,21 +75,24 @@ public boolean has(DBM store, string key) {
     return len(search(store.handle, number, encoded)) > 0;
 }
 
-// Put a key-value pair (insert or update)
+// Put a key-value pair (insert or update).
+// erase already walks the chain and removes the old entry only if present (a no-op otherwise, with
+// count unchanged), so calling it directly avoids a separate `search` walk over the same overflow
+// chain — a put that updates an existing key now does two chain walks (erase + insert) instead of
+// three (search + erase + insert).
 public DBM put(DBM store, string key, bytes value) {
     bytes encoded = bencode(key);
     int number = slot(encoded, store.buckets) + 1;
-    boolean exists = len(search(store.handle, number, encoded)) > 0;
-    DBM current = if (exists) then erase(store, number, encoded) else store;
+    DBM current = erase(store, number, encoded);
     return insert(current, number, encoded, value);
 }
 
-// Remove a key
+// Remove a key. erase is a no-op when the key is absent, so the prior `search` existence walk is
+// redundant — one chain walk instead of two.
 public DBM remove(DBM store, string key) {
     bytes encoded = bencode(key);
     int number = slot(encoded, store.buckets) + 1;
-    boolean exists = len(search(store.handle, number, encoded)) > 0;
-    return if (exists) then erase(store, number, encoded) else store;
+    return erase(store, number, encoded);
 }
 
 // Compute bucket index from key bytes

@@ -7,12 +7,28 @@ import java.util.Objects;
 
 /** Captures the context required by a backend compiler. */
 public record CompileRequest(
-    Path sourceFile, ProgramNode program, ModuleRegistry registry, boolean strict) {
+    Path sourceFile,
+    ProgramNode program,
+    ModuleRegistry registry,
+    boolean strict,
+    io.safelang.runtime.Capabilities capabilities) {
 
   public CompileRequest {
     Objects.requireNonNull(sourceFile);
     Objects.requireNonNull(program);
     Objects.requireNonNull(registry);
+    // Fail safe: a null policy denies host access. Callers (the CLI, TestRunner) pass an explicit
+    // policy; an embedder who forgets gets a sandbox, not the host.
+    capabilities = capabilities != null ? capabilities : io.safelang.runtime.Capabilities.none();
+  }
+
+  /** Deny-by-default: an AOT artifact gets no host capability unless the builder grants it. */
+  public CompileRequest(
+      final Path sourceFile,
+      final ProgramNode program,
+      final ModuleRegistry registry,
+      final boolean strict) {
+    this(sourceFile, program, registry, strict, io.safelang.runtime.Capabilities.none());
   }
 
   public Path directory() {

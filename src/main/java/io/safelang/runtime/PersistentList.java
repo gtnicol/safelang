@@ -1,5 +1,6 @@
 package io.safelang.runtime;
 
+import io.safelang.SAFEException;
 import java.util.AbstractList;
 import java.util.Collection;
 import java.util.Iterator;
@@ -71,6 +72,11 @@ public final class PersistentList<T> extends AbstractList<T> {
   }
 
   public PersistentList<T> append(final T element) {
+    // Single choke point for list growth on every Java backend (interpreter, bytecode VM, JVM):
+    // enforce the advertised MAX_LIST_SIZE so a "terminating" program cannot exhaust the heap.
+    if (count + 1L > SAFEValue.MAX_LIST_SIZE) {
+      throw new SAFEException("list size exceeds the maximum of " + SAFEValue.MAX_LIST_SIZE);
+    }
     // Room in tail?
     if (count - offset() < WIDTH) {
       final var extended = new Object[tail.length + 1];

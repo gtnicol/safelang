@@ -51,6 +51,7 @@ public final class WasmCompiler extends AbstractASTVisitor<SymbolKey> {
   private final TypeRegistry types;
   private final ModuleSymbols symbols;
   private final ModuleRegistry registry;
+  private final io.safelang.runtime.Capabilities capabilities;
 
   // === Per-compilation state holders ===
   private final WasmCompilationState state;
@@ -82,10 +83,13 @@ public final class WasmCompiler extends AbstractASTVisitor<SymbolKey> {
       final ModuleSymbols symbols,
       final ModuleRegistry registry,
       final int dataOffset,
-      final int tableOffset) {
+      final int tableOffset,
+      final io.safelang.runtime.Capabilities capabilities) {
     this.types = types;
     this.symbols = symbols;
     this.registry = registry;
+    this.capabilities =
+        capabilities != null ? capabilities : io.safelang.runtime.Capabilities.all();
     this.state = new WasmCompilationState(name, main, dataOffset, tableOffset);
     this.resolver = new WasmTypeResolver(types, state);
   }
@@ -158,7 +162,8 @@ public final class WasmCompiler extends AbstractASTVisitor<SymbolKey> {
             new LambdaHooks());
     this.lambdas = new WasmLambdaCompiler();
     this.emitter =
-        new WasmBuiltinEmitter(module, runtime, types, state.builtins, support, this::intern);
+        new WasmBuiltinEmitter(
+            module, runtime, types, state.builtins, support, this::intern, capabilities);
     this.registrar = new WasmBuiltinRegistrar(state.name, state.main, module, state, symbols);
     this.binary = new WasmBinaryEmitter(runtime, support, state, new BinaryAdapter());
   }
@@ -505,6 +510,10 @@ public final class WasmCompiler extends AbstractASTVisitor<SymbolKey> {
     for (final var statement : program.statements()) {
       emit(statement);
     }
+
+    // Reclaim any cyclic garbage before exit (mirrors the native backend's
+    // shutdown collection). No-op when the roots buffer is empty.
+    current.emitCall(state.builtins.get("safe_collect_cycles"));
 
     // Phase 0 instrumentation: report peak heap bytes at program end. The
     // builtin is a no-op unless SAFE_HEAP_REPORT is set in the environment.
@@ -1012,6 +1021,19 @@ public final class WasmCompiler extends AbstractASTVisitor<SymbolKey> {
     current.emit(I64_LT_S);
     current.emitIf(WasmOpcode.TYPE_VOID);
     current.emitI32Const(intern("While loop bound must be non-negative"));
+    current.emitCall(runtime.trapWithMessage);
+    current.emit(END);
+
+    // Bounds over MAX_WHILE_BOUND trap too — mirror the interpreter/bytecode/JVM/C so a
+    // user-controlled bound cannot burn CPU on this backend either.
+    current.emitLocalGet(remaining);
+    current.emitI64Const(io.safelang.runtime.SAFEValue.MAX_WHILE_BOUND);
+    current.emit(I64_GT_S);
+    current.emitIf(WasmOpcode.TYPE_VOID);
+    current.emitI32Const(
+        intern(
+            "While loop bound exceeds the maximum of "
+                + io.safelang.runtime.SAFEValue.MAX_WHILE_BOUND));
     current.emitCall(runtime.trapWithMessage);
     current.emit(END);
 

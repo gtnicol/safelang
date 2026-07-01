@@ -21,9 +21,14 @@ class WasmStdlibDiagnosticTest {
     }
   }
 
+  // Modules that intentionally do not compile to WASM: their network/process builtins are
+  // unsupported in the WASM backend by design and raise a clear CompilerException.
+  private static final java.util.Set<String> WASM_UNSUPPORTED = java.util.Set.of("http", "system");
+
   @Test
   void stdlibModulesCompileThroughPipeline() throws Exception {
-    final var modules = TestHelper.stdlibModules();
+    final var modules = new ArrayList<>(TestHelper.stdlibModules());
+    modules.removeAll(WASM_UNSUPPORTED);
     final var loader = new ModuleLoader(Path.of("stdlib/io.safe"));
     final var registry = new ModuleRegistry();
     for (final var module : modules) {

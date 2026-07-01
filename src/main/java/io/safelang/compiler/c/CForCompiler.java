@@ -283,6 +283,14 @@ final class CForCompiler {
     context.indent(builder);
     builder.append("}\n");
 
+    // A range iterable (`for i in a..b`) is a freshly allocated list that is never aliased, so
+    // release it at loop exit (count 1->0, immediate free, never buffered) — otherwise every such
+    // loop leaks its range list. Only for RangeNode sources; a variable iterable is borrowed.
+    if (node.iterable() instanceof io.safelang.ast.RangeNode) {
+      context.indent(builder);
+      builder.append("safe_release(__list__);\n");
+    }
+
     context.indentDec();
     context.indent(builder);
     builder.append("}");

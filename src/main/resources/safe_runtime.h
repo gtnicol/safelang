@@ -19,6 +19,233 @@
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <unistd.h>
+#include <strings.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <limits.h>
+#include <poll.h>
+
+/* ===== Deploy-time host policy (env vars, mirrors JvmRuntime.policyFromEnv) =====
+ *
+ * A native binary built with capabilities granted (the trusted default) is confined at deploy
+ * time by four environment variables — SAFE_FS_ROOT, SAFE_NET_ALLOW, SAFE_EXEC_ALLOW,
+ * SAFE_SERVE_BIND — exactly as the JVM jar is (see runtime/HostPolicy + JvmRuntime.policyFromEnv).
+ * Each unset var means "no restriction" for that axis. Enforcement lives at the file/binary/exec
+ * /http builtin seams below. The runtime is single-threaded, so the resolver uses static buffers. */
+
+static char* __safe_fs_root = NULL;      /* realpath'd jail root; NULL => no jail */
+static char** __safe_net_allow = NULL;   /* egress host allowlist; NULL => any (SSRF-guarded) */
+static int __safe_net_allow_n = 0;
+static char** __safe_exec_allow = NULL;  /* exec argv0 allowlist; NULL => any command */
+static int __safe_exec_allow_n = 0;
+static char* __safe_serve_bind = NULL;   /* http server bind address; NULL => 127.0.0.1 */
+
+/* Cap on list length, mirroring SAFEValue.MAX_LIST_SIZE — enforced at the append choke point and by
+ * the range builder so a "terminating" program cannot exhaust memory. */
+#define SAFE_MAX_LIST_SIZE 10000000
+
+static inline char** safe_split_csv(const char* s, int* count) {
+    int n = 1;
+    for (const char* p = s; *p; p++) if (*p == ',') n++;
+    char** arr = (char**)malloc(sizeof(char*) * (size_t)n);
+    int idx = 0;
+    const char* start = s;
+    for (const char* p = s;; p++) {
+        if (*p == ',' || *p == '\0') {
+            size_t len = (size_t)(p - start);
+            char* item = (char*)malloc(len + 1);
+            memcpy(item, start, len);
+            item[len] = '\0';
+            arr[idx++] = item;
+            if (!*p) break;
+            start = p + 1;
+        }
+    }
+    *count = idx;
+    return arr;
+}
+
+static inline void safe_init_policy_from_env(void) {
+    const char* root = getenv("SAFE_FS_ROOT");
+    if (root && root[0]) {
+        char resolved[PATH_MAX];
+        __safe_fs_root = realpath(root, resolved) ? strdup(resolved) : strdup(root);
+    }
+    const char* net = getenv("SAFE_NET_ALLOW");
+    if (net && net[0]) __safe_net_allow = safe_split_csv(net, &__safe_net_allow_n);
+    const char* exec = getenv("SAFE_EXEC_ALLOW");
+    if (exec && exec[0]) __safe_exec_allow = safe_split_csv(exec, &__safe_exec_allow_n);
+    const char* bind = getenv("SAFE_SERVE_BIND");
+    if (bind && bind[0]) __safe_serve_bind = strdup(bind);
+}
+
+static inline void safe_policy_deny_path(const char* path) {
+    fprintf(stderr, "safe: path escapes the sandbox root: %s\n", path);
+    exit(1);
+}
+
+/* Lexically normalize an absolute path (collapse ".", "..", duplicate slashes) into out,
+ * which must hold at least strlen(in)+2 bytes. Mirrors java.nio Path.normalize for an absolute
+ * path (a leading ".." at the root is dropped). */
+static inline void safe_lexnorm(const char* in, char* out) {
+    char* w = out;
+    char* marks[PATH_MAX];
+    int nseg = 0;
+    const char* p = in;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char* start = p;
+        while (*p && *p != '/') p++;
+        size_t len = (size_t)(p - start);
+        if (len == 1 && start[0] == '.') continue;
+        if (len == 2 && start[0] == '.' && start[1] == '.') {
+            if (nseg > 0) { nseg--; w = marks[nseg]; }
+            continue;
+        }
+        marks[nseg++] = w;
+        *w++ = '/';
+        memcpy(w, start, len);
+        w += len;
+    }
+    if (w == out) *w++ = '/';
+    *w = '\0';
+}
+
+static inline int safe_under_root(const char* p, size_t rootlen) {
+    return strncmp(p, __safe_fs_root, rootlen) == 0
+        && (p[rootlen] == '\0' || p[rootlen] == '/');
+}
+
+/* Resolve a caller-supplied path against the filesystem jail (mirrors HostPolicy.resolve): with
+ * no root, return path unchanged; otherwise confine under the root (escape => fatal) and return
+ * the canonical, symlink-collapsed path. Returns a pointer into a static buffer. */
+static inline const char* safe_check_path(const char* path) {
+    if (!__safe_fs_root) return path;
+    static char candidate[PATH_MAX];
+    static char norm[PATH_MAX];
+    static char result[PATH_MAX];
+    if (path[0] == '/') snprintf(candidate, sizeof(candidate), "%s", path);
+    else snprintf(candidate, sizeof(candidate), "%s/%s", __safe_fs_root, path);
+    safe_lexnorm(candidate, norm);
+    size_t rootlen = strlen(__safe_fs_root);
+    if (!safe_under_root(norm, rootlen)) safe_policy_deny_path(path);
+    /* realpath the deepest existing ancestor, then reattach the not-yet-existing tail. */
+    char probe[PATH_MAX];
+    snprintf(probe, sizeof(probe), "%s", norm);
+    while (access(probe, F_OK) != 0) {
+        char* slash = strrchr(probe, '/');
+        if (!slash || slash == probe) { probe[0] = '/'; probe[1] = '\0'; break; }
+        *slash = '\0';
+    }
+    char real[PATH_MAX];
+    if (!realpath(probe, real)) {
+        snprintf(result, sizeof(result), "%s", norm);
+        return result;
+    }
+    size_t plen = strlen(probe);
+    const char* tail = (plen <= 1) ? norm : (norm + plen);
+    char combined[PATH_MAX];
+    snprintf(combined, sizeof(combined), "%s%s", real, tail);
+    safe_lexnorm(combined, result);
+    if (!safe_under_root(result, rootlen)) safe_policy_deny_path(path);
+    return result;
+}
+
+static inline int safe_check_exec(const char* argv0) {
+    if (!__safe_exec_allow) return 1;
+    for (int i = 0; i < __safe_exec_allow_n; i++)
+        if (strcmp(__safe_exec_allow[i], argv0) == 0) return 1;
+    return 0;
+}
+
+/* Extract the host from a URL (scheme://[user@]host[:port]/...), IPv6 literals unbracketed. */
+static inline void safe_url_host(const char* url, char* host, size_t cap) {
+    host[0] = '\0';
+    const char* p = strstr(url, "://");
+    p = p ? p + 3 : url;
+    const char* at = strchr(p, '@');
+    const char* slash = strchr(p, '/');
+    if (at && (!slash || at < slash)) p = at + 1;
+    size_t i = 0;
+    if (*p == '[') {
+        p++;
+        while (*p && *p != ']' && i < cap - 1) host[i++] = *p++;
+    } else {
+        while (*p && *p != ':' && *p != '/' && *p != '?' && *p != '#' && i < cap - 1)
+            host[i++] = *p++;
+    }
+    host[i] = '\0';
+}
+
+/* True when an address is loopback / link-local (incl. 169.254.169.254 metadata) / site-local /
+ * any-local / multicast — the SSRF blocklist, matching HostPolicy.isInternal. */
+static inline int safe_addr_internal(const struct addrinfo* ai) {
+    if (ai->ai_family == AF_INET) {
+        uint32_t a = ntohl(((struct sockaddr_in*)ai->ai_addr)->sin_addr.s_addr);
+        uint8_t b0 = (a >> 24) & 0xff, b1 = (a >> 16) & 0xff;
+        if (b0 == 127) return 1;                       /* 127/8 loopback */
+        if (b0 == 10) return 1;                        /* 10/8 */
+        if (b0 == 172 && b1 >= 16 && b1 <= 31) return 1; /* 172.16/12 */
+        if (b0 == 192 && b1 == 168) return 1;          /* 192.168/16 */
+        if (b0 == 169 && b1 == 254) return 1;          /* 169.254/16 link-local + metadata */
+        if (b0 == 100 && (b1 & 0xc0) == 0x40) return 1; /* 100.64/10 carrier-grade NAT */
+        if (a == 0) return 1;                          /* 0.0.0.0 any-local */
+        if (b0 >= 224) return 1;                       /* 224/4 multicast + reserved */
+        return 0;
+    }
+    if (ai->ai_family == AF_INET6) {
+        const uint8_t* b = ((struct sockaddr_in6*)ai->ai_addr)->sin6_addr.s6_addr;
+        int nonzero = 0;
+        for (int i = 0; i < 16; i++) if (b[i]) { nonzero = 1; break; }
+        if (!nonzero) return 1;                        /* :: any-local */
+        int prefix0 = 1;
+        for (int i = 0; i < 15; i++) if (b[i]) { prefix0 = 0; break; }
+        if (prefix0 && b[15] == 1) return 1;           /* ::1 loopback */
+        if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) return 1; /* fe80::/10 link-local */
+        if (b[0] == 0xfe && (b[1] & 0xc0) == 0xc0) return 1; /* fec0::/10 site-local */
+        if ((b[0] & 0xfe) == 0xfc) return 1;           /* fc00::/7 unique-local (ULA) */
+        if (b[0] == 0xff) return 1;                    /* ff00::/8 multicast */
+        return 0;
+    }
+    return 0;
+}
+
+/* Egress policy for an HTTP client request (mirrors HostPolicy.egressAllowed): with an allowlist,
+ * only listed hosts are reachable; otherwise any host except one resolving to an internal address. */
+static inline int safe_check_egress(const char* url) {
+    char host[256];
+    safe_url_host(url, host, sizeof(host));
+    if (!host[0]) return 0;
+    if (__safe_net_allow) {
+        for (int i = 0; i < __safe_net_allow_n; i++)
+            if (strcasecmp(__safe_net_allow[i], host) == 0) return 1;
+        return 0;
+    }
+    struct addrinfo hints;
+    struct addrinfo* ai = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, NULL, &hints, &ai) != 0) return 0;
+    int internal = 0;
+    for (struct addrinfo* p = ai; p; p = p->ai_next)
+        if (safe_addr_internal(p)) { internal = 1; break; }
+    freeaddrinfo(ai);
+    return internal ? 0 : 1;
+}
+
+/* The http server bind address (network byte order), from SAFE_SERVE_BIND; default loopback.
+ * Only IPv4 literals are honored (the server is AF_INET); anything else falls back to loopback. */
+static inline uint32_t safe_bind_addr(void) {
+    struct in_addr a;
+    if (__safe_serve_bind && inet_pton(AF_INET, __safe_serve_bind, &a) == 1) return a.s_addr;
+    return htonl(INADDR_LOOPBACK);
+}
 
 /* ===== Uint checked arithmetic ===== */
 
@@ -87,6 +314,27 @@ static void __safe_arena_report(void) {
     }
 }
 
+/* Allocation failure → the runtime's standard deterministic trap, not a NULL-deref segfault. */
+static inline void safe_oom(void) {
+    fprintf(stderr, "safe: out of memory\n");
+    exit(1);
+}
+static inline void* safe_xmalloc(size_t n) {
+    void* p = malloc(n);
+    if (!p) safe_oom();
+    return p;
+}
+static inline void* safe_xrealloc(void* p, size_t n) {
+    void* q = realloc(p, n);
+    if (!q) safe_oom();
+    return q;
+}
+static inline void* safe_xcalloc(size_t count, size_t size) {
+    void* p = calloc(count, size);
+    if (!p) safe_oom();
+    return p;
+}
+
 static inline void* safe_arena_alloc(size_t size) {
     size = (size + 7) & ~(size_t)7; /* 8-byte alignment */
     __safe_arena_bytes += size;
@@ -97,7 +345,7 @@ static inline void* safe_arena_alloc(size_t size) {
         return ptr;
     }
     size_t capacity = size > SAFE_ARENA_BLOCK_SIZE ? size : SAFE_ARENA_BLOCK_SIZE;
-    block = (SAFEArenaBlock*)malloc(sizeof(SAFEArenaBlock) + capacity);
+    block = (SAFEArenaBlock*)safe_xmalloc(sizeof(SAFEArenaBlock) + capacity);
     block->capacity = capacity;
     block->used = size;
     block->next = __safe_arena_head;
@@ -138,6 +386,10 @@ static inline void safe_arena_free(void) {
 /* Forward declarations for per-kind child release inside safe_dispose. */
 static inline void safe_dispose(void* body);
 
+/* Cycle collector (Bacon-Rajan) — defined after the dispose block below. */
+static inline void safe_collect_possible_root(void* body);
+static void safe_collect_cycles(void);
+
 /* Phase C: safe_alloc now uses malloc so struct/enum/tuple/bytes bodies
  * can be reclaimed via free() when refs hit 0. Previously this forwarded
  * to safe_arena_alloc (bump-only), which meant all non-buffer blocks
@@ -145,7 +397,7 @@ static inline void safe_dispose(void* body);
  * immortal allocations (string literals via safe_intern_string, scratch
  * buffers) — see safe_arena_alloc call sites. */
 static inline void* safe_alloc(size_t size, uint8_t kind, uint16_t meta) {
-    char* raw = (char*)malloc(sizeof(SAFEHeader) + size);
+    char* raw = (char*)safe_xmalloc(sizeof(SAFEHeader) + size);
     SAFEHeader* hdr = (SAFEHeader*)raw;
     hdr->refs = 1;
     hdr->kind = kind;
@@ -158,12 +410,28 @@ static inline void safe_release(void* body) {
     if (!body) return;
     SAFEHeader* hdr = safe_header(body);
     if (hdr->refs == SAFE_REFS_IMMORTAL) return;
-    if (--hdr->refs == 0) {
-        safe_dispose(body);
-        /* After child release, free the malloc'd block. IMMORTAL blocks
-         * (string literals) short-circuit at the check above and never
-         * reach here, so they stay put. */
-        free((char*)body - sizeof(SAFEHeader));
+    uint32_t count = safe_rc_count(hdr);
+    if (count == 0) return; /* defensive — already released */
+    count -= 1;
+    safe_rc_set_count(hdr, count);
+    if (count == 0) {
+        if (safe_rc_buffered(hdr)) {
+            /* This block is sitting in the cycle-collector roots buffer; freeing
+             * it now would leave a dangling pointer there. Leave it black/count-0
+             * for the collector's MarkRoots pass to dispose and free. */
+            safe_rc_set_color(hdr, SAFE_COLOR_BLACK);
+        } else {
+            safe_dispose(body);
+            /* After child release, free the malloc'd block. IMMORTAL blocks
+             * (string literals) short-circuit at the check above and never
+             * reach here, so they stay put. */
+            free((char*)body - sizeof(SAFEHeader));
+        }
+    } else {
+        /* Still referenced — but a dropped reference to a container could be
+         * the last external pointer keeping a cycle alive. Buffer it as a
+         * possible cycle root for the collector to examine. */
+        safe_collect_possible_root(body);
     }
 }
 
@@ -179,7 +447,7 @@ static inline SAFEList* safe_list_new(void) {
     SAFEList* list = (SAFEList*)safe_alloc(sizeof(SAFEList), SAFE_KIND_LIST, 0);
     list->capacity = 10;
     list->length = 0;
-    list->data = malloc(list->capacity * sizeof(void*));
+    list->data = safe_xmalloc(list->capacity * sizeof(void*));
     return list;
 }
 
@@ -191,14 +459,18 @@ static inline SAFEList* safe_list_new_typed(uint8_t kind) {
     SAFEList* list = (SAFEList*)safe_alloc(sizeof(SAFEList), SAFE_KIND_LIST, kind);
     list->capacity = 10;
     list->length = 0;
-    list->data = malloc(list->capacity * sizeof(void*));
+    list->data = safe_xmalloc(list->capacity * sizeof(void*));
     return list;
 }
 
 static inline void safe_list_append(SAFEList* list, void* value) {
+    if (list->length >= SAFE_MAX_LIST_SIZE) {
+        fprintf(stderr, "list size exceeds maximum of %d\n", SAFE_MAX_LIST_SIZE);
+        exit(1);
+    }
     if (list->length >= list->capacity) {
         list->capacity *= 2;
-        list->data = realloc(list->data, list->capacity * sizeof(void*));
+        list->data = safe_xrealloc(list->data, list->capacity * sizeof(void*));
     }
     /* Phase 6: if the list is typed with a heap element kind, retain on
      * insert so the caller can safely release its own reference. */
@@ -366,7 +638,7 @@ static inline SAFEMap* safe_map_new_typed(uint8_t key_kind, uint8_t value_kind) 
     SAFEMap* map = (SAFEMap*)safe_alloc(sizeof(SAFEMap), SAFE_KIND_MAP, meta);
     map->capacity = 16;
     map->length = 0;
-    map->buckets = (SAFEMapEntry**)calloc(map->capacity, sizeof(SAFEMapEntry*));
+    map->buckets = (SAFEMapEntry**)safe_xcalloc(map->capacity, sizeof(SAFEMapEntry*));
     map->head = NULL;
     map->tail = NULL;
     return map;
@@ -376,7 +648,7 @@ static inline SAFEMap* safe_map_new(void) {
     SAFEMap* map = (SAFEMap*)safe_alloc(sizeof(SAFEMap), SAFE_KIND_MAP, 0);
     map->capacity = 16;
     map->length = 0;
-    map->buckets = (SAFEMapEntry**)calloc(map->capacity, sizeof(SAFEMapEntry*));
+    map->buckets = (SAFEMapEntry**)safe_xcalloc(map->capacity, sizeof(SAFEMapEntry*));
     map->head = NULL;
     map->tail = NULL;
     return map;
@@ -1353,8 +1625,6 @@ static inline SAFEList* safe_range(int64_t start, int64_t end) {
     return list;
 }
 
-#define SAFE_MAX_LIST_SIZE 10000000
-
 static inline void safe_range_overflow(void) {
     fprintf(stderr, "range size exceeds maximum of %d\n", SAFE_MAX_LIST_SIZE);
     exit(1);
@@ -1452,7 +1722,7 @@ typedef union {
 
 /* ===== Tuple Support ===== */
 
-#define SAFE_MAX_TUPLE_SIZE 64
+#define SAFE_MAX_TUPLE_SIZE 16
 
 typedef struct {
     int count;
@@ -1494,7 +1764,7 @@ static inline SAFESet* safe_set_new(void) {
     set->capacity = 8;
     set->length = 0;
     set->tag = 0;
-    set->data = (SAFEValue*)malloc(set->capacity * sizeof(SAFEValue));
+    set->data = (SAFEValue*)safe_xmalloc(set->capacity * sizeof(SAFEValue));
     return set;
 }
 
@@ -1505,7 +1775,7 @@ static inline SAFESet* safe_set_new_typed(uint8_t kind) {
     set->capacity = 8;
     set->length = 0;
     set->tag = 0;
-    set->data = (SAFEValue*)malloc(set->capacity * sizeof(SAFEValue));
+    set->data = (SAFEValue*)safe_xmalloc(set->capacity * sizeof(SAFEValue));
     return set;
 }
 
@@ -1521,7 +1791,7 @@ static inline void safe_set_add_mut(SAFESet* set, SAFEValue value) {
     if (safe_set_contains(set, value)) return;
     if (set->length >= set->capacity) {
         set->capacity *= 2;
-        set->data = (SAFEValue*)realloc(set->data, set->capacity * sizeof(SAFEValue));
+        set->data = (SAFEValue*)safe_xrealloc(set->data, set->capacity * sizeof(SAFEValue));
     }
     set->data[set->length++] = value;
 }
@@ -1738,6 +2008,7 @@ static inline char* safe_regex_replace(const char* s, const char* pattern, const
 /* ===== Directory Support ===== */
 
 static inline SAFEList* safe_listdir(const char* path) {
+    path = safe_check_path(path);
     SAFEList* list = safe_list_new();
     DIR* dir = opendir(path);
     if (!dir) return list;
@@ -1751,16 +2022,16 @@ static inline SAFEList* safe_listdir(const char* path) {
 }
 
 static inline bool safe_mkdir(const char* path) {
-    return mkdir(path, 0755) == 0;
+    return mkdir(safe_check_path(path), 0755) == 0;
 }
 
 static inline bool safe_rmdir(const char* path) {
-    return rmdir(path) == 0;
+    return rmdir(safe_check_path(path)) == 0;
 }
 
 static inline bool safe_isdir(const char* path) {
     struct stat info;
-    if (stat(path, &info) != 0) return false;
+    if (stat(safe_check_path(path), &info) != 0) return false;
     return S_ISDIR(info.st_mode);
 }
 
@@ -1803,9 +2074,13 @@ typedef struct {
 } SAFEBytes;
 
 static inline SAFEBytes* safe_bytes_new(int64_t length) {
+    if (length < 0) {
+        fprintf(stderr, "safe: negative bytes length %lld\n", (long long)length);
+        exit(1);
+    }
     SAFEBytes* b = (SAFEBytes*)safe_alloc(sizeof(SAFEBytes), SAFE_KIND_BYTES, 0);
     b->length = length;
-    b->data = (uint8_t*)calloc(length, 1);
+    b->data = (uint8_t*)safe_xcalloc((size_t)length, 1);
     return b;
 }
 
@@ -1916,6 +2191,7 @@ static FILE* __safe_bhandles[SAFE_MAX_BHANDLES];
 static int __safe_next_bhandle = 0;
 
 static inline int64_t safe_bopen(const char* path, const char* mode) {
+    path = safe_check_path(path);
     const char* fmode = "rb";
     if (strcmp(mode, "w") == 0) fmode = "w+b";
     else if (strcmp(mode, "rw") == 0) fmode = "r+b";
@@ -1971,7 +2247,7 @@ static inline void safe_bseek(int64_t handle, int64_t offset) {
 }
 
 static inline int64_t safe_bsize(const char* path) {
-    FILE* f = fopen(path, "rb");
+    FILE* f = fopen(safe_check_path(path), "rb");
     if (!f) return 0;
     fseek(f, 0, SEEK_END);
     int64_t size = ftell(f);
@@ -2061,11 +2337,14 @@ static inline char* safe_bytes_tostr(SAFEBytes* b) {
 
 static inline SAFEList* safe_list_append_copy(SAFEList* list, void* element) {
     /* Phase 2 unique-owner fast path: if the caller is the sole reference
-     * holder (refs == 1), mutate in place — no copy, no new allocation.
+     * holder (count == 1), mutate in place — no copy, no new allocation.
      * This is the core memory-reclamation mechanism for functional-style
      * `x = append(x, v)` loops. safe_list_append handles retain-on-insert
-     * based on list meta. */
-    if (list && safe_header(list)->refs == 1) {
+     * based on list meta. Test the COUNT (not the raw refs word): once the
+     * cycle collector buffers the list (a release to count>0 sets the
+     * PURPLE/buffered bits), a raw `refs == 1` test fails and forces the
+     * copy path every call — O(n^2) re-retains of every element. */
+    if (list && safe_rc_count(safe_header(list)) == 1) {
         safe_list_append(list, element);
         return list;
     }
@@ -2076,7 +2355,7 @@ static inline SAFEList* safe_list_append_copy(SAFEList* list, void* element) {
                                              list ? safe_header(list)->meta : 0);
     result->capacity = (list && list->capacity > 0) ? list->capacity : 10;
     result->length = 0;
-    result->data = malloc(result->capacity * sizeof(void*));
+    result->data = safe_xmalloc(result->capacity * sizeof(void*));
     if (list) {
         for (int64_t i = 0; i < list->length; i++) {
             safe_list_append(result, ((void**)list->data)[i]);
@@ -2086,8 +2365,42 @@ static inline SAFEList* safe_list_append_copy(SAFEList* list, void* element) {
     return result;
 }
 
+/* Like safe_list_append_copy, but TRANSFERS ownership of `element` into the list instead of
+ * retaining it. Used by codegen when inserting a freshly boxed element (`__tmp = safe_alloc(...)`,
+ * refs==1): the box's single creation ref becomes the list's ref — no retain, so no matching release
+ * is needed and the box is never released at count>0 (never buffered as a cycle-collector root). On
+ * disposal the list releases the element exactly once, freeing it. `element` must be freshly owned by
+ * the caller (refs==1, not aliased). */
+static inline SAFEList* safe_list_append_move(SAFEList* list, void* element) {
+    /* Raw insert helper: append the pointer without the retain-on-insert that safe_list_append does. */
+    if (list && safe_rc_count(safe_header(list)) == 1) {
+        if (list->length >= list->capacity) {
+            list->capacity *= 2;
+            list->data = safe_xrealloc(list->data, list->capacity * sizeof(void*));
+        }
+        ((void**)list->data)[list->length++] = element;
+        return list;
+    }
+    SAFEList* result = (SAFEList*)safe_alloc(sizeof(SAFEList), SAFE_KIND_LIST,
+                                             list ? safe_header(list)->meta : 0);
+    result->capacity = (list && list->capacity > 0) ? list->capacity : 10;
+    result->length = 0;
+    result->data = safe_xmalloc(result->capacity * sizeof(void*));
+    if (list) {
+        for (int64_t i = 0; i < list->length; i++) {
+            safe_list_append(result, ((void**)list->data)[i]);
+        }
+    }
+    if (result->length >= result->capacity) {
+        result->capacity *= 2;
+        result->data = safe_xrealloc(result->data, result->capacity * sizeof(void*));
+    }
+    ((void**)result->data)[result->length++] = element;
+    return result;
+}
+
 static inline SAFEList* safe_list_append_copy_int(SAFEList* list, int64_t element) {
-    if (list && safe_header(list)->refs == 1) {
+    if (list && safe_rc_count(safe_header(list)) == 1) {
         int64_t* val = (int64_t*)malloc(sizeof(int64_t));
         *val = element;
         safe_list_append(list, val);
@@ -2123,11 +2436,11 @@ static inline SAFEList* safe_list_sort(SAFEList* list) {
 }
 
 static inline int safe_delete(const char* path) {
-    return unlink(path) == 0 ? 1 : 0;
+    return unlink(safe_check_path(path)) == 0 ? 1 : 0;
 }
 
 static inline int safe_exists(const char* path) {
-    return access(path, F_OK) == 0 ? 1 : 0;
+    return access(safe_check_path(path), F_OK) == 0 ? 1 : 0;
 }
 
 static inline char* safe_getenv(const char* name) {
@@ -2145,6 +2458,7 @@ static FILE* __safe_fhandles[SAFE_MAX_FHANDLES];
 static int __safe_next_fhandle = 0;
 
 static inline int64_t safe_fopen(const char* path, const char* mode) {
+    path = safe_check_path(path);
     const char* fmode = "r";
     if (strcmp(mode, "w") == 0) fmode = "w";
     else if (strcmp(mode, "a") == 0) fmode = "a";
@@ -2186,7 +2500,7 @@ static inline void safe_fwrite(int64_t handle, const char* content) {
 }
 
 static inline char* safe_read(const char* path) {
-    FILE* f = fopen(path, "r");
+    FILE* f = fopen(safe_check_path(path), "r");
     if (!f) return safe_arena_strdup("");
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
@@ -2199,7 +2513,7 @@ static inline char* safe_read(const char* path) {
 }
 
 static inline void safe_write(const char* path, const char* content) {
-    FILE* f = fopen(path, "w");
+    FILE* f = fopen(safe_check_path(path), "w");
     if (f) {
         if (content) fputs(content, f);
         fclose(f);
@@ -2212,7 +2526,7 @@ static inline void safe_rawwrite(const char* path, const char* content) { safe_w
 
 // Path-based append (file builtin id 37): open in "a" mode and write.
 static inline void safe_append(const char* path, const char* content) {
-    FILE* f = fopen(path, "a");
+    FILE* f = fopen(safe_check_path(path), "a");
     if (f) {
         if (content) fputs(content, f);
         fclose(f);
@@ -2222,7 +2536,7 @@ static inline void safe_append(const char* path, const char* content) {
 // Path-based line read (file builtin id 40): open, read line by line, return list.
 static inline SAFEList* safe_pathlines(const char* path) {
     SAFEList* list = safe_list_new();
-    FILE* f = fopen(path, "r");
+    FILE* f = fopen(safe_check_path(path), "r");
     if (!f) return list;
     char line[4096];
     while (fgets(line, sizeof(line), f)) {
@@ -2251,6 +2565,78 @@ static inline SAFEList* safe_flines(int64_t handle) {
 
 static inline bool safe_fvalid(int64_t handle) {
     return handle >= 0 && handle < SAFE_MAX_FHANDLES && __safe_fhandles[handle] != NULL;
+}
+
+/* ===== Streaming file I/O (s* builtins) =====
+ * Incremental read/write over the shared file-handle table (__safe_fhandles), rather than
+ * buffering the whole file. Mirrors the interpreter/VM/JVM StreamHandle. */
+#define SAFE_STREAM_MAX_LINE (64L * 1024 * 1024)  /* cap one line, matching StreamHandle.MAX_READ */
+
+static inline int64_t safe_sopen(const char* path, const char* mode) {
+    return safe_fopen(path, mode);  /* modes r/w/a; reuses the file-handle table */
+}
+
+static inline void safe_sclose(int64_t handle) {
+    safe_fclose(handle);
+}
+
+/* Read up to count chars; returns an arena string (empty at EOF), or NULL on a bad handle/count. */
+static inline char* safe_sread(int64_t handle, int64_t count) {
+    if (handle < 0 || handle >= SAFE_MAX_FHANDLES) return NULL;
+    FILE* f = __safe_fhandles[handle];
+    if (!f || count < 0 || count > SAFE_STREAM_MAX_LINE) return NULL;
+    char* buffer = (char*)safe_arena_alloc(count + 1);
+    size_t read = fread(buffer, 1, (size_t)count, f);
+    buffer[read] = '\0';
+    return buffer;
+}
+
+/* Write content through; returns 0 on success, -1 on a bad handle or write error. */
+static inline int safe_swrite(int64_t handle, const char* content) {
+    if (handle < 0 || handle >= SAFE_MAX_FHANDLES) return -1;
+    FILE* f = __safe_fhandles[handle];
+    if (!f) return -1;
+    if (content && fputs(content, f) == EOF) return -1;
+    return 0;
+}
+
+static inline int safe_sflush(int64_t handle) {
+    if (handle < 0 || handle >= SAFE_MAX_FHANDLES) return -1;
+    FILE* f = __safe_fhandles[handle];
+    if (!f) return -1;
+    return fflush(f) == 0 ? 0 : -1;
+}
+
+/* Read one line (terminator stripped, \n / \r / \r\n), bounded at SAFE_STREAM_MAX_LINE so a
+ * newline-less line cannot OOM the host. Returns 1 and sets *out on success, 0 at EOF, -1 on a
+ * bad handle or over-long line. */
+static inline int safe_sline(int64_t handle, char** out) {
+    if (handle < 0 || handle >= SAFE_MAX_FHANDLES) return -1;
+    FILE* f = __safe_fhandles[handle];
+    if (!f) return -1;
+    int c = fgetc(f);
+    if (c == EOF) return 0;
+    size_t cap = 256, len = 0;
+    char* buffer = (char*)safe_arena_alloc(cap);
+    while (c != EOF && c != '\n') {
+        if (c == '\r') {
+            int next = fgetc(f);
+            if (next != '\n' && next != EOF) ungetc(next, f);  /* lone \r terminates */
+            break;
+        }
+        if ((long)len >= SAFE_STREAM_MAX_LINE) return -1;
+        if (len + 1 >= cap) {
+            cap *= 2;
+            char* grown = (char*)safe_arena_alloc(cap);
+            memcpy(grown, buffer, len);
+            buffer = grown;
+        }
+        buffer[len++] = (char)c;
+        c = fgetc(f);
+    }
+    buffer[len] = '\0';
+    *out = buffer;
+    return 1;
 }
 
 /* ===== Recursion Depth Guard ===== */
@@ -2389,31 +2775,38 @@ static inline void safe_dispose_closure(void* body) {
  * size_class is otherwise unused — we repurpose it as a per-block type
  * tag. WASM handles enums differently (bitmap walk via body layout) so
  * this registry is native-only. */
-typedef void (*safe_dispose_fn)(void* body);
+/* A per-enum-type child visitor: applies `visit` to each heap-refcounted
+ * payload slot of the active variant. The dispose path passes safe_release;
+ * the cycle collector passes its own trial-decrement / scan callbacks. */
+typedef void (*safe_visit_fn)(void* body, void (*visit)(void*));
 
 /* Max 255 distinct recursive enum types (size_class is now 8 bits after
  * the Phase-7 meta widening). 0 is reserved for "not registered". SAFE
  * programs in the wild have <10 recursive enum types — this ceiling is
  * effectively unbounded in practice. */
 #define SAFE_MAX_ENUM_TYPES 255
-static safe_dispose_fn safe_enum_dispatch[SAFE_MAX_ENUM_TYPES];
+static safe_visit_fn safe_enum_dispatch[SAFE_MAX_ENUM_TYPES];
 static int safe_enum_type_count = 0;
 
-/* Register a recursive enum's dispose function. Returns the 1-based id
- * the caller should stamp into header.size_class at each variant
- * allocation; 0 means "no dispatch" (the dispose path is a no-op, same
- * as pre-Phase-5 behaviour). */
-static inline int safe_register_enum(safe_dispose_fn fn) {
+/* Register a recursive enum's child visitor. Returns the 1-based id the
+ * caller should stamp into header.size_class at each variant allocation;
+ * 0 means "no dispatch" (the dispose path is a no-op). */
+static inline int safe_register_enum(safe_visit_fn fn) {
     if (safe_enum_type_count >= SAFE_MAX_ENUM_TYPES || !fn) return 0;
     int id = ++safe_enum_type_count;  /* 1-based */
     safe_enum_dispatch[id - 1] = fn;
     return id;
 }
 
-static inline void safe_dispose_enum(void* body) {
+/* Apply `visit` to each heap child of an enum body. */
+static inline void safe_visit_enum(void* body, void (*visit)(void*)) {
     uint8_t id = safe_header(body)->size_class;
     if (id == 0 || id > (uint8_t)safe_enum_type_count) return;
-    safe_enum_dispatch[id - 1](body);
+    safe_enum_dispatch[id - 1](body, visit);
+}
+
+static inline void safe_dispose_enum(void* body) {
+    safe_visit_enum(body, safe_release);
 }
 
 /* String dispose — heap strings (Phase 6 onwards) store the payload
@@ -2436,6 +2829,732 @@ static inline void safe_dispose(void* body) {
         case SAFE_KIND_STRING:  safe_dispose_string(body); break;
         default: break;
     }
+}
+
+/* ===== Cycle collector (Bacon-Rajan synchronous trial deletion) =====
+ * Reference counting alone leaks cycles (a.next=b; b.next=a). This collector
+ * reclaims them. It composes with refcounting: safe_release buffers a dropped
+ * container as a "possible root" (purple); when the buffer fills (or at
+ * shutdown) safe_collect_cycles runs the trial-deletion passes. Native only —
+ * WASM has its own runtime. */
+
+/* Kinds that can hold references to other heap objects (and so participate in
+ * cycles). Scalars/strings/bytes never do. Native structs are value-typed
+ * (their fields are inlined), so OBJECT is excluded too. */
+static inline int safe_kind_has_children(uint8_t kind) {
+    switch (kind) {
+        case SAFE_KIND_LIST:
+        case SAFE_KIND_MAP:
+        case SAFE_KIND_SET:
+        case SAFE_KIND_TUPLE:
+        case SAFE_KIND_ENUM:
+        case SAFE_KIND_CLOSURE:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/* Apply `visit` to every heap child reference of `body` (no buffer freeing).
+ * Mirrors the per-kind walks in safe_dispose_* but with a caller-supplied
+ * callback so the collector can trial-decrement / scan / collect. */
+static inline void safe_children(void* body, void (*visit)(void*)) {
+    if (!body) return;
+    SAFEHeader* hdr = safe_header(body);
+    switch (hdr->kind) {
+        case SAFE_KIND_LIST: {
+            SAFEList* l = (SAFEList*)body;
+            if (safe_kind_is_heap((uint8_t)hdr->meta)) {
+                void** slots = (void**)l->data;
+                for (int64_t i = 0; i < l->length; i++) visit(slots[i]);
+            }
+            break;
+        }
+        case SAFE_KIND_MAP: {
+            SAFEMap* m = (SAFEMap*)body;
+            if (safe_kind_is_heap((uint8_t)(hdr->meta & 0xF))) {
+                for (SAFEMapEntry* e = m->head; e; e = e->order_next) visit(e->value.ptr_val);
+            }
+            break;
+        }
+        case SAFE_KIND_SET: {
+            SAFESet* s = (SAFESet*)body;
+            if (safe_kind_is_heap((uint8_t)hdr->meta)) {
+                for (int64_t i = 0; i < s->length; i++) visit(s->data[i].ptr_val);
+            }
+            break;
+        }
+        case SAFE_KIND_TUPLE: {
+            SAFETuple* t = (SAFETuple*)body;
+            const uint16_t meta = hdr->meta;
+            if (meta) {
+                const int count = t->count < 16 ? (int)t->count : 16;
+                for (int i = 0; i < count; i++) {
+                    if ((meta >> i) & 1u) visit(t->elements[i].ptr_val);
+                }
+            }
+            break;
+        }
+        case SAFE_KIND_CLOSURE: {
+            SAFEClosure* c = (SAFEClosure*)body;
+            if (c->context) {
+                const uint16_t meta = hdr->meta;
+                if (meta) {
+                    void** slots = (void**)c->context;
+                    for (int i = 0; i < 16; i++) {
+                        if ((meta >> i) & 1u) visit(slots[i]);
+                    }
+                }
+                visit(c->context);
+            }
+            break;
+        }
+        case SAFE_KIND_ENUM:
+            safe_visit_enum(body, visit);
+            break;
+        default:
+            break;
+    }
+}
+
+/* Free a collected block's malloc'd side buffer (NOT its children — the
+ * collector frees the whole white cycle by recursion, without refcounting). */
+static inline void safe_free_buffers(void* body) {
+    SAFEHeader* hdr = safe_header(body);
+    switch (hdr->kind) {
+        case SAFE_KIND_LIST: { SAFEList* l = (SAFEList*)body; if (l->data) { free(l->data); l->data = NULL; } break; }
+        case SAFE_KIND_MAP:  { SAFEMap* m = (SAFEMap*)body; if (m->buckets) { free(m->buckets); m->buckets = NULL; } break; }
+        case SAFE_KIND_SET:  { SAFESet* s = (SAFESet*)body; if (s->data) { free(s->data); s->data = NULL; } break; }
+        case SAFE_KIND_BYTES:{ SAFEBytes* b = (SAFEBytes*)body; if (b->data) { free(b->data); b->data = NULL; } break; }
+        default: break;
+    }
+}
+
+/* Possible-roots buffer. */
+static void** safe_roots = NULL;
+static size_t safe_roots_len = 0;
+static size_t safe_roots_cap = 0;
+#ifndef SAFE_GC_THRESHOLD
+#define SAFE_GC_THRESHOLD 1024
+#endif
+
+static inline void safe_collect_possible_root(void* body) {
+    SAFEHeader* hdr = safe_header(body);
+    if (hdr->refs == SAFE_REFS_IMMORTAL) return;
+    if (!safe_kind_has_children(hdr->kind)) return;
+    if (safe_rc_color(hdr) == SAFE_COLOR_PURPLE) return; /* already a candidate */
+    safe_rc_set_color(hdr, SAFE_COLOR_PURPLE);
+    if (!safe_rc_buffered(hdr)) {
+        safe_rc_set_buffered(hdr, 1);
+        if (safe_roots_len == safe_roots_cap) {
+            size_t ncap = safe_roots_cap ? safe_roots_cap * 2 : 256;
+            safe_roots = (void**)safe_xrealloc(safe_roots, ncap * sizeof(void*));
+            safe_roots_cap = ncap;
+        }
+        safe_roots[safe_roots_len++] = body;
+        if (safe_roots_len >= SAFE_GC_THRESHOLD) safe_collect_cycles();
+    }
+}
+
+/* --- Trial-deletion passes --- */
+static void safe_mark_gray(void* body);
+static void safe_gc_trial_dec(void* child) {
+    if (!child) return;
+    SAFEHeader* h = safe_header(child);
+    if (h->refs == SAFE_REFS_IMMORTAL) return;
+    if (safe_rc_count(h) > 0) safe_rc_set_count(h, safe_rc_count(h) - 1);
+    safe_mark_gray(child);
+}
+static void safe_mark_gray(void* body) {
+    if (!body) return;
+    SAFEHeader* hdr = safe_header(body);
+    if (hdr->refs == SAFE_REFS_IMMORTAL) return;
+    if (safe_rc_color(hdr) != SAFE_COLOR_GRAY) {
+        safe_rc_set_color(hdr, SAFE_COLOR_GRAY);
+        safe_children(body, safe_gc_trial_dec);
+    }
+}
+
+static void safe_scan_black(void* body);
+static void safe_gc_restore(void* child) {
+    if (!child) return;
+    SAFEHeader* h = safe_header(child);
+    if (h->refs == SAFE_REFS_IMMORTAL) return;
+    safe_rc_set_count(h, safe_rc_count(h) + 1);
+    if (safe_rc_color(h) != SAFE_COLOR_BLACK) safe_scan_black(child);
+}
+static void safe_scan_black(void* body) {
+    if (!body) return;
+    SAFEHeader* hdr = safe_header(body);
+    if (hdr->refs == SAFE_REFS_IMMORTAL) return;
+    safe_rc_set_color(hdr, SAFE_COLOR_BLACK);
+    safe_children(body, safe_gc_restore);
+}
+static void safe_scan(void* body) {
+    if (!body) return;
+    SAFEHeader* hdr = safe_header(body);
+    if (hdr->refs == SAFE_REFS_IMMORTAL) return;
+    if (safe_rc_color(hdr) == SAFE_COLOR_GRAY) {
+        if (safe_rc_count(hdr) > 0) {
+            safe_scan_black(body);
+        } else {
+            safe_rc_set_color(hdr, SAFE_COLOR_WHITE);
+            safe_children(body, safe_scan);
+        }
+    }
+}
+
+/* Count of blocks reclaimed from cycles — for tests / SAFE_HEAP_REPORT. */
+static size_t safe_gc_collected = 0;
+
+static void safe_collect_white(void* body) {
+    if (!body) return;
+    SAFEHeader* hdr = safe_header(body);
+    if (hdr->refs == SAFE_REFS_IMMORTAL) return;
+    if (safe_rc_color(hdr) == SAFE_COLOR_WHITE && !safe_rc_buffered(hdr)) {
+        safe_rc_set_color(hdr, SAFE_COLOR_BLACK); /* set before recursion so the cycle is freed once */
+        safe_children(body, safe_collect_white);
+        safe_free_buffers(body);
+        free((char*)body - sizeof(SAFEHeader));
+        safe_gc_collected++;
+    }
+}
+
+/* Guards against re-entrant collection: disposing a corpse below releases its
+ * children, which can re-buffer possible roots and re-hit SAFE_GC_THRESHOLD.
+ * A nested safe_collect_cycles would then free objects the outer pass is still
+ * iterating — a use-after-free. The nested call becomes a no-op; the freshly
+ * buffered roots are collected on the next (non-nested) run. */
+static int safe_gc_running = 0;
+
+/* Run the trial-deletion cycle collector over the buffered possible roots. */
+static void safe_collect_cycles(void) {
+    if (safe_gc_running) return;
+    safe_gc_running = 1;
+    /* Snapshot the roots and give the global buffer a fresh start, so possible
+     * roots buffered by child releases DURING this collection accumulate for the
+     * NEXT run instead of mutating (or reallocating) the set we are iterating. */
+    void** work = safe_roots;
+    size_t work_len = safe_roots_len;
+    safe_roots = NULL;
+    safe_roots_len = 0;
+    safe_roots_cap = 0;
+
+    /* MarkRoots: gray every still-purple, still-referenced root; drop the rest,
+     * freeing any that refcounting already reduced to a black/count-0 corpse. */
+    size_t kept = 0;
+    for (size_t i = 0; i < work_len; i++) {
+        void* s = work[i];
+        SAFEHeader* h = safe_header(s);
+        if (safe_rc_color(h) == SAFE_COLOR_PURPLE && safe_rc_count(h) > 0) {
+            safe_mark_gray(s);
+            work[kept++] = s;
+        } else {
+            safe_rc_set_buffered(h, 0);
+            if (safe_rc_color(h) == SAFE_COLOR_BLACK && safe_rc_count(h) == 0) {
+                safe_dispose(s);
+                free((char*)s - sizeof(SAFEHeader));
+            }
+        }
+    }
+    work_len = kept;
+    /* ScanRoots: restore counts for externally reachable subgraphs (black),
+     * leave true garbage white. */
+    for (size_t i = 0; i < work_len; i++) safe_scan(work[i]);
+    /* CollectRoots: free the white cycles. */
+    for (size_t i = 0; i < work_len; i++) {
+        void* s = work[i];
+        safe_rc_set_buffered(safe_header(s), 0);
+        safe_collect_white(s);
+    }
+    free(work);
+    safe_gc_running = 0;
+}
+
+/* ===== Network / process resource limits (mirror the JVM-family defaults) ===== */
+#define SAFE_EXEC_TIMEOUT_MS        30000
+#define SAFE_EXEC_MAX_CAPTURE       (16 * 1024 * 1024)   /* per stream */
+#define SAFE_CLIENT_MAX_RESPONSE    (32L * 1024 * 1024)
+#define SAFE_SERVER_MAX_BODY        (8 * 1024 * 1024)
+#define SAFE_SERVER_MAX_HEADER_BYTES (64 * 1024)
+#define SAFE_SERVER_MAX_HEADERS     100
+#define SAFE_SERVER_MAX_LINE        (16 * 1024)
+#define SAFE_SERVER_READ_TIMEOUT    3       /* seconds, per connection (bounds slowloris) */
+#define SAFE_SERVER_ACCEPT_POLL_MS  1000
+
+/* Monotonic milliseconds for deadline math (independent of wall-clock changes). */
+static inline long safe_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* True when a header name/value carries no CR/LF/NUL, so it is safe to emit on a header line. */
+static inline int safe_header_clean(const char* s) {
+    for (; s && *s; s++) {
+        if (*s == '\r' || *s == '\n') return 0;
+    }
+    return 1;
+}
+
+/* ===== Process execution (system:exec) ===== */
+
+typedef struct {
+    int ok;
+    int64_t status;
+    char* out;
+    char* err;
+    char* error;
+} SafeExecResult;
+
+/* Drain two pipe fds concurrently with poll(), bounded by a wall-clock deadline and a per-stream
+ * capture cap. Both buffers are NUL-terminated; ownership transfers to the caller. Returns
+ * 0 = ok, 1 = capture cap exceeded, 2 = deadline exceeded, 3 = out of memory. */
+static inline int safe_drain2(int fout, int ferr, char** outp, char** errp, long deadline_ms) {
+    size_t ocap = 256, olen = 0, ecap = 256, elen = 0;
+    char* obuf = (char*)malloc(ocap);
+    char* ebuf = (char*)malloc(ecap);
+    if (!obuf || !ebuf) { free(obuf); free(ebuf); *outp = NULL; *errp = NULL; return 3; }
+    int oopen = 1, eopen = 1, status = 0;
+    char tmp[4096];
+    while (oopen || eopen) {
+        long remaining = deadline_ms - safe_now_ms();
+        if (remaining <= 0) { status = 2; break; }
+        struct pollfd fds[2];
+        int n = 0;
+        if (oopen) { fds[n].fd = fout; fds[n].events = POLLIN; n++; }
+        if (eopen) { fds[n].fd = ferr; fds[n].events = POLLIN; n++; }
+        int pr = poll(fds, n, (int)(remaining > 1000 ? 1000 : remaining));
+        if (pr < 0) break;
+        if (pr == 0) continue;
+        for (int i = 0; i < n; i++) {
+            if (!(fds[i].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+            int isout = (fds[i].fd == fout);
+            ssize_t r = read(fds[i].fd, tmp, sizeof(tmp));
+            if (r <= 0) { if (isout) oopen = 0; else eopen = 0; continue; }
+            size_t* len = isout ? &olen : &elen;
+            size_t* cap = isout ? &ocap : &ecap;
+            char** buf = isout ? &obuf : &ebuf;
+            if (*len + (size_t)r > (size_t)SAFE_EXEC_MAX_CAPTURE) { status = 1; goto done; }
+            if (*len + (size_t)r + 1 > *cap) {
+                while (*len + (size_t)r + 1 > *cap) *cap *= 2;
+                char* nb = (char*)realloc(*buf, *cap);
+                if (!nb) { status = 3; goto done; }
+                *buf = nb;
+            }
+            memcpy(*buf + *len, tmp, (size_t)r);
+            *len += (size_t)r;
+        }
+    }
+done:
+    obuf[olen] = '\0'; ebuf[elen] = '\0';
+    *outp = obuf; *errp = ebuf;
+    return status;
+}
+
+static inline SafeExecResult safe_sys_exec(SAFEList* command) {
+    SafeExecResult res = {0, 0, NULL, NULL, NULL};
+    int64_t argc = safe_list_len(command);
+    if (argc <= 0) { res.error = "Empty command"; return res; }
+    char** argv = (char**)malloc(sizeof(char*) * (size_t)(argc + 1));
+    if (!argv) { res.error = "out of memory"; return res; }
+    for (int64_t i = 0; i < argc; i++) argv[i] = safe_list_get_str(command, i);
+    argv[argc] = NULL;
+    if (!safe_check_exec(argv[0])) {
+        free(argv);
+        res.error = "command not permitted by exec allowlist";
+        return res;
+    }
+    int outp[2], errp[2];
+    if (pipe(outp) != 0 || pipe(errp) != 0) { free(argv); res.error = "pipe failed"; return res; }
+    pid_t pid = fork();
+    if (pid < 0) { free(argv); res.error = "fork failed"; return res; }
+    if (pid == 0) {
+        dup2(outp[1], STDOUT_FILENO); dup2(errp[1], STDERR_FILENO);
+        close(outp[0]); close(outp[1]); close(errp[0]); close(errp[1]);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    close(outp[1]); close(errp[1]);
+    long deadline = safe_now_ms() + SAFE_EXEC_TIMEOUT_MS;
+    int drain = safe_drain2(outp[0], errp[0], &res.out, &res.err, deadline);
+    close(outp[0]); close(errp[0]);
+    free(argv);
+    if (drain != 0) {
+        /* A runaway child is killed; the cap/deadline breach is reported as Err. */
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, 0);
+        res.error = drain == 1 ? "command output exceeds limit"
+                  : drain == 2 ? "command timed out"
+                               : "out of memory";
+        return res;
+    }
+    int wstatus = 0;
+    waitpid(pid, &wstatus, 0);
+    res.ok = 1;
+    res.status = WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : -1;
+    return res;
+}
+
+/* ===== HTTP client (system: http) — libcurl, gated ===== */
+#ifdef SAFE_ENABLE_HTTP
+#include <curl/curl.h>
+
+typedef struct {
+    int ok;
+    int64_t status;
+    char* body;
+    SAFEMap* headers;
+    char* error;
+} SafeHttpResult;
+
+struct safe_curl_buf { char* data; size_t len; };
+
+static size_t safe_curl_write(void* ptr, size_t size, size_t nmemb, void* userdata) {
+    size_t total = size * nmemb;
+    struct safe_curl_buf* b = (struct safe_curl_buf*)userdata;
+    /* Returning a short count aborts the transfer — caps the response and signals an error. */
+    if (b->len + total > (size_t)SAFE_CLIENT_MAX_RESPONSE) return 0;
+    char* nb = (char*)realloc(b->data, b->len + total + 1);
+    if (!nb) return 0;
+    b->data = nb;
+    memcpy(b->data + b->len, ptr, total);
+    b->len += total;
+    b->data[b->len] = '\0';
+    return total;
+}
+
+static size_t safe_curl_header(char* buffer, size_t size, size_t nitems, void* userdata) {
+    size_t total = size * nitems;
+    SAFEMap* headers = (SAFEMap*)userdata;
+    char* colon = (char*)memchr(buffer, ':', total);
+    if (colon) {
+        size_t nlen = (size_t)(colon - buffer);
+        char* name = (char*)malloc(nlen + 1);
+        if (!name) return total;
+        memcpy(name, buffer, nlen); name[nlen] = '\0';
+        char* vstart = colon + 1; size_t vlen = total - nlen - 1;
+        while (vlen > 0 && *vstart == ' ') { vstart++; vlen--; }
+        while (vlen > 0 && (vstart[vlen-1] == '\r' || vstart[vlen-1] == '\n' || vstart[vlen-1] == ' ')) vlen--;
+        char* val = (char*)malloc(vlen + 1);
+        if (!val) { free(name); return total; }
+        memcpy(val, vstart, vlen); val[vlen] = '\0';
+        safe_map_put_str(headers, name, val);
+        free(name); free(val);
+    }
+    return total;
+}
+
+static inline SafeHttpResult safe_http_request(const char* method, const char* url, SAFEMap* req_headers, const char* body) {
+    SafeHttpResult res = {0, 0, NULL, NULL, NULL};
+    if (!safe_check_egress(url)) { res.error = "egress blocked by network policy"; return res; }
+    CURL* curl = curl_easy_init();
+    if (!curl) { res.error = "curl init failed"; return res; }
+    struct safe_curl_buf buf = {NULL, 0};
+    SAFEMap* resp_headers = safe_map_new();
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, safe_curl_write);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, safe_curl_header);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp_headers);
+    /* Do not auto-follow redirects — match the Java HttpClient (which does not) and avoid silently
+     * chasing a 30x to an internal/metadata host (SSRF-safer). */
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE, (curl_off_t)SAFE_CLIENT_MAX_RESPONSE);
+    struct curl_slist* hlist = NULL;
+    if (req_headers) {
+        for (SAFEMapEntry* e = req_headers->head; e; e = e->order_next) {
+            const char* v = e->value.string_val ? e->value.string_val : "";
+            char* line = (char*)malloc(strlen(e->key.string_key) + strlen(v) + 3);
+            sprintf(line, "%s: %s", e->key.string_key, v);
+            hlist = curl_slist_append(hlist, line);
+            free(line);
+        }
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hlist);
+    }
+    if (body && body[0]) curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    CURLcode rc = curl_easy_perform(curl);
+    if (rc != CURLE_OK) {
+        res.error = (char*)curl_easy_strerror(rc);
+    } else {
+        long code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+        res.ok = 1;
+        res.status = code;
+        res.body = buf.data ? buf.data : strdup("");
+        res.headers = resp_headers;
+    }
+    if (hlist) curl_slist_free_all(hlist);
+    curl_easy_cleanup(curl);
+    return res;
+}
+#endif /* SAFE_ENABLE_HTTP */
+
+/* ===== HTTP server (http: serve) — raw sockets; TLS gated via OpenSSL ===== */
+#ifdef SAFE_ENABLE_TLS
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+static SSL_CTX* safe_tls_ctx = NULL;
+#endif
+
+typedef struct {
+    char* method;
+    char* path;
+    SAFEMap* headers;
+    char* body;
+    int conn;
+    void* ssl;
+} SafeHttpReq;
+
+static inline ssize_t safe_conn_read(int fd, void* ssl, void* buf, size_t n) {
+#ifdef SAFE_ENABLE_TLS
+    if (ssl) return SSL_read((SSL*)ssl, buf, (int)n);
+#endif
+    (void)ssl; return read(fd, buf, n);
+}
+
+static inline ssize_t safe_conn_write(int fd, void* ssl, const void* buf, size_t n) {
+#ifdef SAFE_ENABLE_TLS
+    if (ssl) return SSL_write((SSL*)ssl, buf, (int)n);
+#endif
+    (void)ssl; return write(fd, buf, n);
+}
+
+/* Read one CRLF-terminated line (CRLF stripped), or NULL at EOF. */
+/* Read one CRLF line (CRLF stripped). Returns NULL at EOF; on a line longer than
+ * SAFE_SERVER_MAX_LINE sets *toolong and returns NULL (the caller answers 431). */
+static inline char* safe_http_readline(int fd, void* ssl, int* toolong) {
+    *toolong = 0;
+    size_t cap = 128, len = 0;
+    char* buf = (char*)malloc(cap);
+    if (!buf) { *toolong = 1; return NULL; }
+    char c;
+    while (safe_conn_read(fd, ssl, &c, 1) == 1) {
+        if (c == '\n') {
+            if (len > 0 && buf[len-1] == '\r') len--;
+            buf[len] = '\0';
+            return buf;
+        }
+        if (len + 1 >= cap) {
+            if (cap >= (size_t)SAFE_SERVER_MAX_LINE) { free(buf); *toolong = 1; return NULL; }
+            cap *= 2;
+            char* nb = (char*)realloc(buf, cap);
+            if (!nb) { free(buf); *toolong = 1; return NULL; }
+            buf = nb;
+        }
+        buf[len++] = c;
+    }
+    if (len == 0) { free(buf); return NULL; }
+    buf[len] = '\0';
+    return buf;
+}
+
+static inline const char* safe_http_reason(int64_t status) {
+    switch (status) {
+        case 200: return "OK";
+        case 201: return "Created";
+        case 204: return "No Content";
+        case 301: return "Moved Permanently";
+        case 302: return "Found";
+        case 400: return "Bad Request";
+        case 401: return "Unauthorized";
+        case 403: return "Forbidden";
+        case 404: return "Not Found";
+        case 413: return "Payload Too Large";
+        case 431: return "Request Header Fields Too Large";
+        case 500: return "Internal Server Error";
+        default:  return "Status";
+    }
+}
+
+/* Close a connection, releasing any TLS state. */
+static inline void safe_http_teardown(int conn, void* ssl) {
+#ifdef SAFE_ENABLE_TLS
+    if (ssl) { SSL_shutdown((SSL*)ssl); SSL_free((SSL*)ssl); }
+#endif
+    (void)ssl;
+    if (conn >= 0) close(conn);
+}
+
+/* Write a bodyless status response (used for 413/431 rejections). */
+static inline void safe_http_write_status(int conn, void* ssl, int status) {
+    char buf[160];
+    int n = snprintf(buf, sizeof(buf),
+                     "HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                     status, safe_http_reason(status));
+    safe_conn_write(conn, ssl, buf, (size_t)n);
+}
+
+/* Abort the server on a malformed request / invalid handler response (surfaced, per policy). */
+static inline void safe_http_fail(const char* msg) {
+    fprintf(stderr, "http:serve: %s\n", msg);
+    exit(1);
+}
+
+static inline int safe_http_listen(int port, const char* cert, const char* key) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    /* Loopback by default (SAFE_SERVE_BIND overrides) so a guest server is not exposed by default. */
+    addr.sin_addr.s_addr = safe_bind_addr();
+    addr.sin_port = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); return -1; }
+    if (listen(fd, 16) < 0) { close(fd); return -1; }
+    if (cert && cert[0]) {
+#ifdef SAFE_ENABLE_TLS
+        SSL_library_init();
+        SSL_load_error_strings();
+        OpenSSL_add_all_algorithms();
+        safe_tls_ctx = SSL_CTX_new(TLS_server_method());
+        if (!safe_tls_ctx
+            /* Confine cert/key to the fs jail (safe_check_path uses one static buffer, so each
+             * result is consumed by its SSL_CTX_* call before the next call overwrites it). */
+            || SSL_CTX_use_certificate_file(safe_tls_ctx, safe_check_path(cert), SSL_FILETYPE_PEM) <= 0
+            || SSL_CTX_use_PrivateKey_file(safe_tls_ctx, safe_check_path(key), SSL_FILETYPE_PEM) <= 0) {
+            close(fd); return -1;
+        }
+#else
+        (void)key; close(fd); return -1; /* TLS requested but not compiled in */
+#endif
+    }
+    return fd;
+}
+
+/* Accept and parse one request, bounded by the server limits. Return codes:
+ *   1  = request parsed, run the handler (out populated)
+ *   0  = handled here (4xx written, or dropped) — keep serving, counts as a connection
+ *  -1  = malformed request — caller aborts via safe_http_fail
+ *  -2  = no connection within the accept poll — re-check the stop predicate, do not count */
+static inline int safe_http_accept(int server, SafeHttpReq* out) {
+    memset(out, 0, sizeof(*out));
+    struct pollfd pfd;
+    pfd.fd = server; pfd.events = POLLIN; pfd.revents = 0;
+    int pr = poll(&pfd, 1, SAFE_SERVER_ACCEPT_POLL_MS);
+    if (pr <= 0) return -2;
+    int conn = accept(server, NULL, NULL);
+    if (conn < 0) return -2;
+    /* per-connection read timeout (slowloris) */
+    struct timeval tv;
+    tv.tv_sec = SAFE_SERVER_READ_TIMEOUT; tv.tv_usec = 0;
+    setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    void* ssl = NULL;
+#ifdef SAFE_ENABLE_TLS
+    if (safe_tls_ctx) {
+        SSL* s = SSL_new(safe_tls_ctx);
+        SSL_set_fd(s, conn);
+        if (SSL_accept(s) <= 0) { SSL_free(s); close(conn); return 0; } /* handshake failed: drop */
+        ssl = s;
+    }
+#endif
+    out->conn = conn;
+    out->ssl = ssl;
+    out->headers = safe_map_new();
+    out->method = strdup("GET");
+    out->path = strdup("/");
+    out->body = strdup("");
+
+    int toolong = 0;
+    char* line = safe_http_readline(conn, ssl, &toolong);
+    if (toolong) { if (line) free(line); safe_http_write_status(conn, ssl, 431); safe_http_teardown(conn, ssl); return 0; }
+    if (!line) { safe_http_teardown(conn, ssl); return 0; } /* empty connection / probe: drop */
+    char* sp1 = strchr(line, ' ');
+    if (!sp1 || sp1 == line) { free(line); safe_http_teardown(conn, ssl); return -1; } /* malformed */
+    *sp1 = '\0';
+    char* pstart = sp1 + 1;
+    char* sp2 = strchr(pstart, ' ');
+    if (sp2) *sp2 = '\0';
+    if (*pstart == '\0') { free(line); safe_http_teardown(conn, ssl); return -1; }      /* malformed */
+    free(out->method); out->method = strdup(line);
+    free(out->path); out->path = strdup(pstart);
+    free(line);
+
+    long content_length = 0;
+    int header_count = 0;
+    size_t header_bytes = 0;
+    for (;;) {
+        line = safe_http_readline(conn, ssl, &toolong);
+        if (toolong) { if (line) free(line); safe_http_write_status(conn, ssl, 431); safe_http_teardown(conn, ssl); return 0; }
+        if (!line) break;                       /* EOF before blank line — proceed leniently */
+        if (line[0] == '\0') { free(line); break; }
+        header_count++;
+        header_bytes += strlen(line) + 2;
+        if (header_count > SAFE_SERVER_MAX_HEADERS || header_bytes > (size_t)SAFE_SERVER_MAX_HEADER_BYTES) {
+            free(line); safe_http_write_status(conn, ssl, 431); safe_http_teardown(conn, ssl); return 0;
+        }
+        char* colon = strchr(line, ':');
+        if (colon) {
+            *colon = '\0';
+            char* val = colon + 1;
+            while (*val == ' ') val++;
+            safe_map_put_str(out->headers, line, val);
+            if (strcasecmp(line, "content-length") == 0) content_length = atol(val);
+        }
+        free(line);
+    }
+    if (content_length < 0 || content_length > SAFE_SERVER_MAX_BODY) {
+        safe_http_write_status(conn, ssl, 413); safe_http_teardown(conn, ssl); return 0;
+    }
+    if (content_length > 0) {
+        char* body = (char*)malloc((size_t)content_length + 1);
+        if (!body) { safe_http_teardown(conn, ssl); return 0; }
+        long got = 0;
+        while (got < content_length) {
+            ssize_t r = safe_conn_read(conn, ssl, body + got, (size_t)(content_length - got));
+            if (r <= 0) break;
+            got += r;
+        }
+        body[got] = '\0';
+        free(out->body); out->body = body;
+    }
+    return 1;
+}
+
+/* Serialize the handler's response. Returns 0 on success, -1 if a handler-supplied header carries
+ * CR/LF/NUL (the caller aborts rather than splitting the response). */
+static inline int safe_http_respond(SafeHttpReq* req, int64_t status, const char* body, SAFEMap* headers) {
+    if (headers) {
+        for (SAFEMapEntry* e = headers->head; e; e = e->order_next) {
+            if (!safe_header_clean(e->key.string_key) || !safe_header_clean(e->value.string_val)) {
+                safe_http_teardown(req->conn, req->ssl);
+                return -1;
+            }
+        }
+    }
+    size_t blen = body ? strlen(body) : 0;
+    char head[256];
+    int hn = snprintf(head, sizeof(head), "HTTP/1.1 %lld %s\r\n", (long long)status, safe_http_reason(status));
+    safe_conn_write(req->conn, req->ssl, head, (size_t)hn);
+    if (headers) {
+        for (SAFEMapEntry* e = headers->head; e; e = e->order_next) {
+            const char* v = e->value.string_val ? e->value.string_val : "";
+            size_t need = strlen(e->key.string_key) + strlen(v) + 5;
+            char* hbuf = (char*)malloc(need);
+            if (!hbuf) continue;
+            int n = snprintf(hbuf, need, "%s: %s\r\n", e->key.string_key, v);
+            safe_conn_write(req->conn, req->ssl, hbuf, (size_t)n);
+            free(hbuf);
+        }
+    }
+    char clbuf[96];
+    int cn = snprintf(clbuf, sizeof(clbuf), "Content-Length: %zu\r\nConnection: close\r\n\r\n", blen);
+    safe_conn_write(req->conn, req->ssl, clbuf, (size_t)cn);
+    if (blen) safe_conn_write(req->conn, req->ssl, body, blen);
+    safe_http_teardown(req->conn, req->ssl);
+    return 0;
+}
+
+static inline void safe_http_close(int server) {
+    if (server >= 0) close(server);
+#ifdef SAFE_ENABLE_TLS
+    if (safe_tls_ctx) { SSL_CTX_free(safe_tls_ctx); safe_tls_ctx = NULL; }
+#endif
 }
 
 #endif /* SAFE_RUNTIME_H */

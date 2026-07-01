@@ -8,6 +8,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class BuiltinRegistry {
 
@@ -164,6 +165,30 @@ public final class BuiltinRegistry {
         "file",
         List.of(param("path", type("string")), param("content", type("string"))),
         type("WriteResult"));
+
+    // Streaming file I/O (s*): incremental read/write handles, modeled on the binary b* handles.
+    nondeterministic(
+        115,
+        "sopen",
+        "file",
+        List.of(param("path", type("string")), param("mode", type("string"))),
+        type("StreamResult"));
+    nondeterministic(116, "sclose", "file", List.of(param("s", type("Stream"))), type("void"));
+    nondeterministic(117, "sline", "file", List.of(param("s", type("Stream"))), type("LineResult"));
+    nondeterministic(
+        118,
+        "sread",
+        "file",
+        List.of(param("s", type("Stream")), param("count", type("int"))),
+        type("ReadResult"));
+    nondeterministic(
+        119,
+        "swrite",
+        "file",
+        List.of(param("s", type("Stream")), param("content", type("string"))),
+        type("WriteResult"));
+    nondeterministic(
+        120, "sflush", "file", List.of(param("s", type("Stream"))), type("WriteResult"));
 
     // collections (9)
     register(
@@ -454,6 +479,47 @@ public final class BuiltinRegistry {
     // env (1) — ID 101
     nondeterministic(101, "getenv", "env", List.of(param("name", type("string"))), type("string"));
 
+    // http (4) — IDs 110-113 — all impure (network I/O)
+    nondeterministic(
+        110, "http_get", "http", List.of(param("url", type("string"))), type("HttpResult"));
+    nondeterministic(
+        111,
+        "http_post",
+        "http",
+        List.of(param("url", type("string")), param("body", type("string"))),
+        type("HttpResult"));
+    nondeterministic(
+        112,
+        "http_request",
+        "http",
+        List.of(
+            param("method", type("string")),
+            param("url", type("string")),
+            param("headers", generic("map", type("string"), type("string"))),
+            param("body", type("string"))),
+        type("HttpResult"));
+    // handler/stop are closures; "?" param type accepts any function value without forcing
+    // generic binding (matches() short-circuits on "?").
+    nondeterministic(
+        113,
+        "http_serve",
+        "http",
+        List.of(
+            param("port", type("int")),
+            param("handler", type("?")),
+            param("stop", type("?")),
+            param("cert", type("string")),
+            param("key", type("string"))),
+        type("void"));
+
+    // system (1) — ID 114 — impure (process execution)
+    nondeterministic(
+        114,
+        "system_exec",
+        "system",
+        List.of(param("command", generic("list", type("string")))),
+        type("RunResult"));
+
     // System variables
     variable("MAX_LIST_SIZE", SAFEValue.ofInt(SAFEValue.MAX_LIST_SIZE));
     variable("MAX_TUPLE_SIZE", SAFEValue.ofInt(SAFEValue.MAX_TUPLE_SIZE));
@@ -528,6 +594,17 @@ public final class BuiltinRegistry {
     return Collections.unmodifiableMap(SYSTEM_VARIABLES);
   }
 
+  // Host-dependent globals require ENVIRONMENT (they read System.getProperty); every other system
+  // variable (VERSION, MAX_LIST_SIZE, MAX_TUPLE_SIZE) is a deterministic constant and stays
+  // ungated.
+  private static final Set<String> ENVIRONMENT_VARIABLES =
+      Set.of("OS", "ARCH", "OS_VERSION", "PLATFORM");
+
+  /** Capability a system variable requires, or {@code null} for an ungated constant. */
+  public static Capability variableCapability(final String name) {
+    return ENVIRONMENT_VARIABLES.contains(name) ? Capability.ENVIRONMENT : null;
+  }
+
   private static TypeNode type(final String name) {
     return new TypeNode(0, 0, name);
   }
@@ -568,6 +645,27 @@ public final class BuiltinRegistry {
   public static boolean isStrictAllowed(final String name) {
     final var builtin = BY_NAME.get(name);
     return builtin == null || builtin.purity() != Builtin.Purity.NONDETERMINISTIC;
+  }
+
+  /**
+   * The host-access {@link Capability} this builtin requires, or {@code null} if it needs none.
+   * Only {@code NONDETERMINISTIC} builtins can require a capability; of those, the {@code module}
+   * picks the category. {@code time}/{@code rand}/{@code exit} are non-deterministic but touch no
+   * host resource, so they require no capability (they are governed by {@code --strict} instead).
+   */
+  public static Capability capability(final String name) {
+    final var builtin = BY_NAME.get(name);
+    if (builtin == null || builtin.purity() != Builtin.Purity.NONDETERMINISTIC) {
+      return null;
+    }
+    return switch (builtin.module()) {
+      case "file", "binary" -> Capability.FILESYSTEM;
+      case "http" -> Capability.NETWORK;
+      case "system" -> Capability.PROCESS;
+      case "env" -> Capability.ENVIRONMENT;
+      case "io" -> Capability.STDIN; // only `input` is NONDETERMINISTIC here
+      default -> null; // std (time/exit), math (rand) — determinism, not host access
+    };
   }
 
   private static void mathFloat(final int id, final String name) {

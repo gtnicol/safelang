@@ -18,7 +18,8 @@ public final class BinaryBuiltins {
   public static void register(
       final BuiltinExecutors executors,
       final Map<Integer, BinaryFileHandle> handles,
-      final AtomicInteger counter) {
+      final AtomicInteger counter,
+      final io.safelang.runtime.HostPolicy policy) {
     // balloc(int) -> bytes
     executors.register(
         "balloc",
@@ -170,8 +171,9 @@ public final class BinaryBuiltins {
           final var path = args.getFirst().asString();
           final var mode = args.get(1).asString();
           try {
+            final var resolved = policy.resolve(path).toString();
             final var id = counter.getAndIncrement();
-            final var handle = new BinaryFileHandle(id, path, mode);
+            final var handle = new BinaryFileHandle(id, resolved, mode);
             handles.put(id, handle);
             return SAFEValue.ofInt(id);
           } catch (IOException exception) {
@@ -203,11 +205,16 @@ public final class BinaryBuiltins {
         "bread",
         args -> {
           final var id = (int) args.getFirst().asInt();
-          final var count = (int) args.get(1).asInt();
+          final var requested = args.get(1).asInt();
+          // Validate the long before the int cast so a huge value cannot wrap to a small/negative
+          // count; BinaryFileHandle.read enforces the same bound defensively.
+          if (requested < 0 || requested > BinaryFileHandle.maxRead()) {
+            throw new InterpreterException("bread: invalid read count " + requested);
+          }
           final var handle = handles.get(id);
           if (handle == null) throw new InterpreterException("bread: invalid handle " + id);
           try {
-            return SAFEValue.ofBytes(handle.read(count));
+            return SAFEValue.ofBytes(handle.read((int) requested));
           } catch (IOException exception) {
             throw new InterpreterException("bread: " + exception.getMessage(), exception);
           }

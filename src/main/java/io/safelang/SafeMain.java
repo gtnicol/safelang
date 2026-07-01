@@ -35,6 +35,11 @@ public class SafeMain {
     var bytecode_ = false;
     var wasm_ = false;
     var jvm_ = false;
+    String allowSpec = null;
+    String denySpec = null;
+    String fsRoot = null;
+    String netAllow = null;
+    String execAllow = null;
     final var entries = new ArrayList<String>();
     final var filtered = new ArrayList<String>();
     for (var i = 0; i < args.length; i++) {
@@ -43,6 +48,41 @@ public class SafeMain {
       switch (arg) {
         case "--strict", "--deterministic":
           strict = true;
+          break;
+        case "--allow":
+          if (i + 1 >= args.length) {
+            System.err.println("Error: --allow requires an argument (e.g. fs,net,proc)");
+            System.exit(1);
+          }
+          allowSpec = args[++i];
+          break;
+        case "--deny":
+          if (i + 1 >= args.length) {
+            System.err.println("Error: --deny requires an argument (e.g. net,proc)");
+            System.exit(1);
+          }
+          denySpec = args[++i];
+          break;
+        case "--fs-root":
+          if (i + 1 >= args.length) {
+            System.err.println("Error: --fs-root requires a directory argument");
+            System.exit(1);
+          }
+          fsRoot = args[++i];
+          break;
+        case "--net-allow":
+          if (i + 1 >= args.length) {
+            System.err.println("Error: --net-allow requires a host/CIDR list argument");
+            System.exit(1);
+          }
+          netAllow = args[++i];
+          break;
+        case "--exec-allow":
+          if (i + 1 >= args.length) {
+            System.err.println("Error: --exec-allow requires a command list argument");
+            System.exit(1);
+          }
+          execAllow = args[++i];
           break;
         case "--native":
           native_ = true;
@@ -87,6 +127,40 @@ public class SafeMain {
       }
     }
 
+    // Host capability policy. The CLI runs trusted local code, so it grants all by default;
+    // --allow restricts to exactly the listed set, --deny removes from the full set.
+    var capabilities = io.safelang.runtime.Capabilities.all();
+    try {
+      if (allowSpec != null) {
+        capabilities = io.safelang.runtime.Capabilities.parse(allowSpec);
+      }
+      if (denySpec != null) {
+        for (final var token : denySpec.split(",")) {
+          if (!token.isBlank()) {
+            capabilities = capabilities.without(io.safelang.runtime.Capability.parse(token));
+          }
+        }
+      }
+    } catch (final IllegalArgumentException badCapability) {
+      System.err.println("Error: " + badCapability.getMessage());
+      System.exit(1);
+    }
+
+    // The richer host policy (filesystem jail, egress allowlist, exec allowlist) is enforced on the
+    // interpreter/VM run paths; the compile commands only consult policy.capabilities().
+    final var policyBuilder =
+        io.safelang.runtime.HostPolicy.trusted().toBuilder().capabilities(capabilities);
+    if (fsRoot != null) {
+      policyBuilder.fsRoot(Path.of(fsRoot));
+    }
+    if (netAllow != null) {
+      policyBuilder.netAllow(List.of(netAllow.split(",")));
+    }
+    if (execAllow != null) {
+      policyBuilder.execAllow(List.of(execAllow.split(",")));
+    }
+    final var policy = policyBuilder.build();
+
     if (filtered.size() < 2) {
       printUsage();
       System.exit(1);
@@ -104,19 +178,19 @@ public class SafeMain {
     try {
       switch (command) {
         case "run":
-          run(read(filename), filename, arguments, strict, modulePath);
+          run(read(filename), filename, arguments, strict, modulePath, policy);
           break;
         case "compile":
-          compile(read(filename), filename, strict, modulePath);
+          compile(read(filename), filename, strict, modulePath, capabilities);
           break;
         case "build":
-          build(read(filename), filename, strict, modulePath);
+          build(read(filename), filename, strict, modulePath, capabilities);
           break;
         case "bytecode":
-          bytecode(read(filename), filename, strict, modulePath);
+          bytecode(read(filename), filename, strict, modulePath, capabilities);
           break;
         case "vm":
-          vm(filename, arguments);
+          vm(filename, arguments, policy);
           break;
         case "disassemble":
           disassemble(filename);
@@ -131,10 +205,10 @@ public class SafeMain {
           ast(read(filename), filename, strict, modulePath);
           break;
         case "wasm":
-          wasm(read(filename), filename, strict, modulePath);
+          wasm(read(filename), filename, strict, modulePath, capabilities);
           break;
         case "jvm":
-          jvm(read(filename), filename, strict, modulePath);
+          jvm(read(filename), filename, strict, modulePath, capabilities);
           break;
         case "test":
           final var runner = new TestRunner(strict, native_, bytecode_, wasm_, jvm_);
@@ -180,9 +254,10 @@ public class SafeMain {
       final String filename,
       final List<String> arguments,
       final boolean strict,
-      final List<Path> modulePath) {
+      final List<Path> modulePath,
+      final io.safelang.runtime.HostPolicy policy) {
     try {
-      SafeRuntime.run(source, filename, arguments, strict, modulePath);
+      SafeRuntime.run(source, filename, arguments, strict, modulePath, policy);
     } catch (Exception e) {
       error("Interpreter", e);
     }
@@ -192,9 +267,10 @@ public class SafeMain {
       final String source,
       final String filename,
       final boolean strict,
-      final List<Path> modulePath) {
+      final List<Path> modulePath,
+      final io.safelang.runtime.Capabilities capabilities) {
     try {
-      final var result = SafeRuntime.compile(source, filename, strict, modulePath);
+      final var result = SafeRuntime.compile(source, filename, strict, modulePath, capabilities);
       System.out.println("Compiled to: " + result.output());
     } catch (Exception e) {
       error("Compiler", e);
@@ -205,9 +281,10 @@ public class SafeMain {
       final String source,
       final String filename,
       final boolean strict,
-      final List<Path> modulePath) {
+      final List<Path> modulePath,
+      final io.safelang.runtime.Capabilities capabilities) {
     try {
-      final var binary = SafeRuntime.build(source, filename, strict, modulePath);
+      final var binary = SafeRuntime.build(source, filename, strict, modulePath, capabilities);
       System.out.println("Built: " + binary);
     } catch (Exception e) {
       error("Build", e);
@@ -218,18 +295,20 @@ public class SafeMain {
       final String source,
       final String filename,
       final boolean strict,
-      final List<Path> modulePath) {
+      final List<Path> modulePath,
+      final io.safelang.runtime.Capabilities capabilities) {
     try {
-      final var result = SafeRuntime.bytecode(source, filename, strict, modulePath);
+      final var result = SafeRuntime.bytecode(source, filename, strict, modulePath, capabilities);
       System.out.println("Compiled bytecode to: " + result.output());
     } catch (Exception e) {
       error("Bytecode Compiler", e);
     }
   }
 
-  private static void vm(final String filename, final List<String> args) {
+  private static void vm(
+      final String filename, final List<String> args, final io.safelang.runtime.HostPolicy policy) {
     try {
-      SafeRuntime.vm(filename, args);
+      SafeRuntime.vm(filename, args, policy);
     } catch (Exception e) {
       error("VM", e);
     }
@@ -319,9 +398,10 @@ public class SafeMain {
       final String source,
       final String filename,
       final boolean strict,
-      final List<Path> modulePath) {
+      final List<Path> modulePath,
+      final io.safelang.runtime.Capabilities capabilities) {
     try {
-      final var result = SafeRuntime.wasm(source, filename, strict, modulePath);
+      final var result = SafeRuntime.wasm(source, filename, strict, modulePath, capabilities);
       System.out.println("Compiled to: " + result.output());
       result.runInstruction().ifPresent(command -> System.out.println("Run with: " + command));
     } catch (Exception exception) {
@@ -333,9 +413,10 @@ public class SafeMain {
       final String source,
       final String filename,
       final boolean strict,
-      final List<Path> modulePath) {
+      final List<Path> modulePath,
+      final io.safelang.runtime.Capabilities capabilities) {
     try {
-      final var result = SafeRuntime.jvm(source, filename, strict, modulePath);
+      final var result = SafeRuntime.jvm(source, filename, strict, modulePath, capabilities);
       System.out.println("Compiled to: " + result.output());
       result.runInstruction().ifPresent(command -> System.out.println("Run with: " + command));
     } catch (Exception exception) {

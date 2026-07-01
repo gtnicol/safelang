@@ -371,6 +371,117 @@ class CCodeGenTests {
   }
 
   @Test
+  void streamingBuiltinsEmitRuntimeCalls() {
+    final var code =
+        generate(
+            """
+                program test;
+                import io { println };
+                import file;
+                Stream w = case file:sopen("out.txt", "w") of { Ok(s): s; Err(e): Stream { id: 0 - 1, path: "" }; };
+                WriteResult x = file:swrite(w, "hi");
+                file:sflush(w);
+                file:sclose(w);
+                Stream r = case file:sopen("out.txt", "r") of { Ok(s): s; Err(e): Stream { id: 0 - 1, path: "" }; };
+                io:println(case file:sread(r, 2) of { Ok(t): t; Err(e): e; });
+                io:println(case file:sline(r) of { Line(t): t; End: "END"; Err(e): e; });
+                file:sclose(r);
+                """);
+    assertTrue(code.contains("safe_sopen("), "sopen runtime call");
+    assertTrue(code.contains("safe_swrite("), "swrite runtime call");
+    assertTrue(code.contains("safe_sflush("), "sflush runtime call");
+    assertTrue(code.contains("safe_sread("), "sread runtime call");
+    assertTrue(code.contains("safe_sline("), "sline runtime call");
+    assertTrue(code.contains("safe_sclose("), "sclose runtime call");
+    assertTrue(code.contains("StreamResult_Ok_new"), "Stream result construction");
+    // The case subject must be bound to a temp so an effectful subject (sline/sread) is evaluated
+    // exactly once, not re-run per branch.
+    assertTrue(code.contains("__case"), "case subject bound to a temp");
+  }
+
+  @Test
+  void streamingRoundTripNative() throws Exception {
+    // Round-trip on the native C backend: write three lines, then read them back one at a time.
+    // Each sline is an effectful case subject — if it were re-evaluated per branch, lines would be
+    // consumed multiple times and the output would be wrong.
+    final var output =
+        compileAndRun(
+            """
+                program test;
+                import io { println };
+                import file;
+                Stream w = case file:sopen("stream_rt.txt", "w") of { Ok(s): s; Err(e): Stream { id: 0 - 1, path: "" }; };
+                WriteResult x = file:swrite(w, "alpha\\nbeta\\ngamma\\n");
+                file:sflush(w);
+                file:sclose(w);
+                Stream r = case file:sopen("stream_rt.txt", "r") of { Ok(s): s; Err(e): Stream { id: 0 - 1, path: "" }; };
+                io:println(case file:sline(r) of { Line(t): t; End: "END"; Err(e): "E:" + e; });
+                io:println(case file:sline(r) of { Line(t): t; End: "END"; Err(e): "E:" + e; });
+                io:println(case file:sline(r) of { Line(t): t; End: "END"; Err(e): "E:" + e; });
+                io:println(case file:sline(r) of { Line(t): t; End: "END"; Err(e): "E:" + e; });
+                file:sclose(r);
+                """);
+    assertEquals("alpha\nbeta\ngamma\nEND", output);
+  }
+
+  @Test
+  void cycleCollectorSurvivesManyCollections() throws Exception {
+    // Allocating and dropping refcounted containers in a long loop runs the native cycle collector
+    // many times. The collector must not re-enter itself: disposing a count-0 corpse during a pass
+    // releases its children, which re-buffer possible roots and can re-hit SAFE_GC_THRESHOLD; a
+    // nested safe_collect_cycles would then free objects the outer pass is still iterating — a
+    // use-after-free that crashed (SIGABRT) at scale. 30001 iterations triggers many collections.
+    final var output =
+        compileAndRun(
+            """
+                program test;
+                import io;
+                import std;
+                import collections;
+                int total = 0;
+                for i in 0..30000 {
+                    list<int> a = [i, i + 1, i + 2];
+                    list<list<int>> b = [a, a, a];
+                    total = total + collections:size(b);
+                }
+                io:println(std:str(total));
+                """);
+    assertEquals("90003", output);
+  }
+
+  @Test
+  void tupleReturningFunctionDoesNotLeakOrCorrupt() throws Exception {
+    // The lsm-read leak shape: a function builds a list of boxed tuples in a for-loop over a range,
+    // returns it inside a tuple; the caller destructures and consumes it in a loop. Exercises all
+    // three leak fixes at once — move-append of the fresh boxes (no cycle-collector buffering),
+    // release of the range iterable, and release of the tuple-typed local — plus their interaction
+    // with the collector. Must produce the right sum and (under ASan, run separately) not leak/UAF.
+    final var output =
+        compileAndRun(
+            """
+                program test;
+                import io;
+                import std;
+                import collections;
+                (int, list<(int, int, int)>) build(int n) {
+                    list<(int, int, int)> idx = [];
+                    for i in 0..(n - 1) {
+                        idx = collections:append(idx, (i, i + 1, i + 2));
+                    }
+                    return (n, idx);
+                }
+                int total = 0;
+                for j in 0..20000 {
+                    (int, list<(int, int, int)>) r = build(5);
+                    const (cnt, lst) = r;
+                    total = total + collections:size(lst);
+                }
+                io:println(std:str(total));
+                """);
+    assertEquals("100005", output);
+  }
+
+  @Test
   void parityListPrinting() throws Exception {
     final var source =
         """
@@ -1085,6 +1196,116 @@ class CCodeGenTests {
     assertFalse(
         code.contains("const char* OS = \""),
         "generated C still bakes OS as a string literal:\n" + code);
+  }
+
+  @Test
+  void parityLambdaCapturingDecodedString() throws Exception {
+    // Refcount regression: a lambda capturing a non-literal `string` (a bare char* with no
+    // SAFEHeader, here from binary:decode) must NOT be safe_retain'd at capture — that read a
+    // header
+    // 8 bytes before the buffer (heap-buffer-overflow). The capture is stored as a plain pointer.
+    final var source =
+        """
+            program test;
+            import std;
+            import binary;
+            import test;
+            bytes encoded = binary:encode("Bob");
+            string name = binary:decode(encoded);
+            test:suite("capture", [
+                fn() -> do {
+                    test:equal(name, "Bob", "captured decoded string")
+                }
+            ]);
+            """;
+    final var expected = TestHelper.run(source);
+    final var actual = compileAndRun(source);
+    assertEquals(expected, actual);
+  }
+
+  @Test
+  void parityMapStoreReadAndStructReassign() throws Exception {
+    // Refcount regression: a bytes value stored in a map, read back via `map[k]` (an OWNED
+    // safe_map_get_ptr — must not double-retain), inside a struct rebuilt every iteration via
+    // `b = put(b, ..)` (the old field must be released since put returns a freshly-constructed
+    // struct). Exercises the map-index / struct-reassign / literal-arg discipline together.
+    final var source =
+        """
+            program test;
+            import io;
+            import std;
+            import binary;
+            type Box { map<string,bytes> data; int n; }
+            Box put(Box b, string k, bytes v) {
+                map<string,bytes> d = b.data;
+                d[k] = v;
+                return Box { data: d, n: b.n + 1 };
+            }
+            Box b = Box { data: {}, n: 0 };
+            for i in 0..99 {
+                b = put(b, std:str(i), binary:encode(std:str(i * 2)));
+            }
+            bytes r = b.data[std:str(50)];
+            io:println(binary:decode(r));
+            io:println(std:str(b.n));
+            """;
+    final var expected = TestHelper.run(source);
+    final var actual = compileAndRun(source);
+    assertEquals(expected, actual);
+  }
+
+  @Test
+  void parityHeapArgToFunctionWithDefault() throws Exception {
+    // Step 5 regression: a BORROWED heap arg passed to a function that also has a default parameter
+    // goes through the default-padding path; the callee releases every heap param at exit, so the
+    // caller must retain the borrowed arg there too — otherwise it is freed and the later use is a
+    // use-after-free.
+    final var source =
+        """
+            program test;
+            import io;
+            import std;
+            import binary;
+            int score(bytes data, int bonus = 5) { return binary:length(data) + bonus; }
+            bytes b = binary:encode("hello");
+            io:println(std:str(score(b)));
+            io:println(std:str(binary:length(b)));
+            io:println(std:str(score(b, 10)));
+            """;
+    final var expected = TestHelper.run(source);
+    final var actual = compileAndRun(source);
+    assertEquals(expected, actual);
+  }
+
+  @Test
+  void parityFreshHeapArgToStoringFunction() throws Exception {
+    // Step 5 regression: a FRESH heap value passed to a function that STORES it into a map (which
+    // retains on insert) must survive the callee's param-release; and the empty map literal in the
+    // struct field must be TYPED so the store retains. Reading it back after 100 iterations
+    // exercises
+    // the whole caller-transfer / callee-release / map-retain chain.
+    final var source =
+        """
+            program test;
+            import io;
+            import std;
+            import binary;
+            type Box { map<string,bytes> data; int n; }
+            Box put(Box b, string k, bytes v) {
+                map<string,bytes> d = b.data;
+                d[k] = v;
+                return Box { data: d, n: b.n + 1 };
+            }
+            Box b = Box { data: {}, n: 0 };
+            for i in 0..99 {
+                b = put(b, std:str(i), binary:encode(std:str(i * 3)));
+            }
+            io:println(binary:decode(b.data[std:str(40)]));
+            io:println(std:str(b.n));
+            """;
+    final var expected = TestHelper.run(source);
+    final var actual = compileAndRun(source);
+    assertEquals(expected, actual);
   }
 
   private record RunResult(int exitCode, String output) {}

@@ -103,7 +103,7 @@ final class CEnumGenerator {
       builder
           .append("static void ")
           .append(name)
-          .append("_dispose(void* body) {\n")
+          .append("_dispose(void* body, void (*visit)(void*)) {\n")
           .append("    ")
           .append(name)
           .append("* v = (")
@@ -124,7 +124,7 @@ final class CEnumGenerator {
             final var isSelf = name.equals(field.name()) || name.equals(fieldType);
             if (isSelf || context.isHeapRc(fieldType)) {
               builder
-                  .append("            safe_release(v->data.")
+                  .append("            visit(v->data.")
                   .append(variant.name())
                   .append("._")
                   .append(i)

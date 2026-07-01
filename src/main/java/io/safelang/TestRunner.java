@@ -75,7 +75,9 @@ public class TestRunner {
 
     summary(results);
 
-    return results.stream().anyMatch(r -> r.failed() > 0 || r.error() != null) ? 1 : 0;
+    return results.stream().anyMatch(r -> r.failed() > 0 || (r.error() != null && !skipped(r)))
+        ? 1
+        : 0;
   }
 
   private Result run(final Path file) {
@@ -260,8 +262,20 @@ public class TestRunner {
           exception.getMessage() != null
               ? exception.getMessage()
               : exception.getClass().getSimpleName();
+      // A test using a builtin the WASM backend does not support (network/process I/O) is skipped
+      // for this backend, not failed — those tests exercise the JVM-family and native backends.
+      if (message.contains("not available in the WASM backend")) {
+        return new Result(name, 0, 0, List.of(), SKIPPED);
+      }
       return new Result(name, 0, 1, List.of(message), message);
     }
+  }
+
+  /** Sentinel {@code error} value marking a file skipped on the current backend (not a failure). */
+  private static final String SKIPPED = "SKIPPED";
+
+  private static boolean skipped(final Result result) {
+    return SKIPPED.equals(result.error());
   }
 
   private Result parse(final String file, final String output) {
@@ -286,7 +300,7 @@ public class TestRunner {
     // Quiet by default: a passing file is accounted for in the summary table, so don't print its
     // per-file block. Only files that errored or had failures get the verbose treatment, keeping
     // `mvn test` and `test <dir>` output focused on what actually needs attention.
-    if (result.error() == null && result.failed() == 0) {
+    if (skipped(result) || (result.error() == null && result.failed() == 0)) {
       return;
     }
     System.out.println("=== " + result.file() + " ===");
@@ -306,7 +320,10 @@ public class TestRunner {
     var total = 0;
     var failures = 0;
     for (final var result : results) {
-      final var status = result.error() != null ? "ERROR" : result.failed() > 0 ? "FAIL" : "OK";
+      final var status =
+          skipped(result)
+              ? "SKIP"
+              : result.error() != null ? "ERROR" : result.failed() > 0 ? "FAIL" : "OK";
       System.out.printf(
           "  %-30s %3d passed  %2d failed  [%s]%n",
           result.file(), result.passed(), result.failed(), status);

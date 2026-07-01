@@ -1,0 +1,12 @@
+program system_exec;
+import io;
+import system;
+
+// Run a command as an argument list (no shell). The result is Ok(Output) or Err(message);
+// Output carries the exit code plus captured stdout and stderr.
+RunResult result = system:exec(["echo", "hello from a child process"]);
+
+io:println(case result of {
+    Ok(o): o.stdout;
+    Err(e): "failed: " + e;
+});

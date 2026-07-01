@@ -600,13 +600,16 @@ final class CBuiltinResolver {
             return "safe_list_append_copy_int(" + list + ", (int64_t)" + value + ")";
           }
           if (kind != null && context.enumerations().containsKey(kind)) {
+            // Fresh box: move it into the list (transfer the creation ref, no retain) so it is
+            // owned
+            // solely by the list and freed on disposal — never released at count>0, never buffered.
             return "({ "
                 + kind
                 + "* __tmp = safe_alloc(sizeof("
                 + kind
                 + "), SAFE_KIND_ENUM, 0); *__tmp = "
                 + value
-                + "; safe_list_append_copy("
+                + "; safe_list_append_move("
                 + list
                 + ", __tmp); })";
           }
@@ -627,7 +630,7 @@ final class CBuiltinResolver {
                 + bits
                 + "); *__tmp = "
                 + value
-                + "; safe_list_append_copy("
+                + "; safe_list_append_move("
                 + list
                 + ", __tmp); })";
           }
@@ -725,9 +728,143 @@ final class CBuiltinResolver {
         }
       case "filevalid":
         return "safe_fvalid(" + context.emit(arguments.getFirst()) + ")";
+      case "system_exec":
+        {
+          final var command = context.emit(arguments.getFirst());
+          // Output fields are positional (exit, stdout, stderr) to dodge the <stdio.h>
+          // stdout/stderr macros, which would expand inside a designated initializer.
+          return "({ SafeExecResult __e__ = safe_sys_exec("
+              + command
+              + "); __e__.ok ? RunResult_Ok_new((Output){__e__.status, __e__.out, __e__.err})"
+              + " : RunResult_Err_new(__e__.error); })";
+        }
+      case "http_get":
+        return httpResult(
+            "safe_http_request(\"GET\", " + context.emit(arguments.getFirst()) + ", NULL, NULL)");
+      case "http_post":
+        return httpResult(
+            "safe_http_request(\"POST\", "
+                + context.emit(arguments.getFirst())
+                + ", NULL, "
+                + context.emit(arguments.get(1))
+                + ")");
+      case "http_request":
+        return httpResult(
+            "safe_http_request("
+                + context.emit(arguments.getFirst())
+                + ", "
+                + context.emit(arguments.get(1))
+                + ", "
+                + context.emit(arguments.get(2))
+                + ", "
+                + context.emit(arguments.get(3))
+                + ")");
+      case "http_serve":
+        return httpServe(arguments);
+      case "sopen":
+        {
+          final var path = context.emit(arguments.getFirst());
+          final var mode = context.emit(arguments.get(1));
+          return "({ int64_t __h__ = safe_sopen("
+              + path
+              + ", "
+              + mode
+              + "); "
+              + "(__h__ >= 0) ? StreamResult_Ok_new((Stream){.id = __h__, .path = "
+              + path
+              + "}) "
+              + ": StreamResult_Err_new(\"open failed\"); })";
+        }
+      case "sclose":
+        return "safe_sclose((" + context.emit(arguments.getFirst()) + ").id)";
+      case "sline":
+        {
+          final var stream = context.emit(arguments.getFirst());
+          return "({ char* __l__ = NULL; int __rc__ = safe_sline(("
+              + stream
+              + ").id, &__l__); "
+              + "__rc__ > 0 ? LineResult_Line_new(__l__) "
+              + ": (__rc__ == 0 ? LineResult_End_new() : LineResult_Err_new(\"read failed\")); })";
+        }
+      case "sread":
+        {
+          final var stream = context.emit(arguments.getFirst());
+          final var count = context.emit(arguments.get(1));
+          return "({ char* __r__ = safe_sread(("
+              + stream
+              + ").id, "
+              + count
+              + "); "
+              + "__r__ ? ReadResult_Ok_new(__r__) : ReadResult_Err_new(\"read failed\"); })";
+        }
+      case "swrite":
+        {
+          final var stream = context.emit(arguments.getFirst());
+          final var content = context.emit(arguments.get(1));
+          return "({ int __w__ = safe_swrite(("
+              + stream
+              + ").id, "
+              + content
+              + "); "
+              + "__w__ == 0 ? WriteResult_Done_new() : WriteResult_Err_new(\"write failed\"); })";
+        }
+      case "sflush":
+        {
+          final var stream = context.emit(arguments.getFirst());
+          return "({ int __w__ = safe_sflush(("
+              + stream
+              + ").id); "
+              + "__w__ == 0 ? WriteResult_Done_new() : WriteResult_Err_new(\"flush failed\"); })";
+        }
       default:
         return null;
     }
+  }
+
+  /** Wrap a {@code safe_http_request(...)} call into a lowered {@code HttpResult} enum value. */
+  private String httpResult(final String call) {
+    return "({ SafeHttpResult __r__ = "
+        + call
+        + "; __r__.ok ? HttpResult_Ok_new((Response){__r__.status, __r__.body, __r__.headers})"
+        + " : HttpResult_Err_new(__r__.error); })";
+  }
+
+  /**
+   * Emit the {@code http:serve} accept loop inline as a statement-expression. The handler and stop
+   * closures are invoked through the same inline function-pointer cast the C backend uses for any
+   * call-through-value, so no per-program thunk function is needed. {@code Request}/{@code
+   * Response} are built positionally from the raw request/response the runtime exposes.
+   */
+  private String httpServe(final List<ASTNode> arguments) {
+    final var port = context.emit(arguments.getFirst());
+    final var handler = context.emit(arguments.get(1));
+    final var stop = context.emit(arguments.get(2));
+    final var cert = context.emit(arguments.get(3));
+    final var key = context.emit(arguments.get(4));
+    return "({ int __srv__ = safe_http_listen((int)("
+        + port
+        + "), "
+        + cert
+        + ", "
+        + key
+        + "); SAFEClosure* __h__ = "
+        + handler
+        + "; SAFEClosure* __stop__ = "
+        + stop
+        + "; int64_t __n__ = 0; while (__srv__ >= 0) {"
+        + " SafeHttpReq __raw__; int __rc__ = safe_http_accept(__srv__, &__raw__);"
+        // -2: accept poll tick, no connection — re-check the stop predicate without counting.
+        + " if (__rc__ == -2) { if (((bool(*)(int64_t, void*))__stop__->fn)(__n__, __stop__->context)) break; else continue; }"
+        // -1: malformed request — surface (stderr + exit), per policy.
+        + " if (__rc__ == -1) { safe_http_fail(\"malformed request\"); }"
+        // 1: parsed — run the handler and write its response (a 0 rc already answered with a 4xx).
+        + " if (__rc__ == 1) {"
+        + " Request __req__ = (Request){__raw__.method, __raw__.path, __raw__.headers, __raw__.body};"
+        + " Response __resp__ = ((Response(*)(Request, void*))__h__->fn)(__req__, __h__->context);"
+        + " if (safe_http_respond(&__raw__, __resp__.status, __resp__.body, __resp__.headers) != 0) safe_http_fail(\"invalid response header\"); }"
+        + " __n__++;"
+        + " if (((bool(*)(int64_t, void*))__stop__->fn)(__n__, __stop__->context)) break; }"
+        + " safe_http_close(__srv__); (void)0; })";
   }
 
   private String println(final List<ASTNode> args) {

@@ -34,6 +34,7 @@ final class WasmHostBuiltins {
     new Signature("safe_rc_retain_tagged", new int[] {I64}, new int[] {I64}),
     new Signature("safe_rc_release_tagged", new int[] {I64}, new int[] {}),
     new Signature("safe_rc_mark_immortal", new int[] {I32}, new int[] {}),
+    new Signature("safe_collect_cycles", new int[] {}, new int[] {}),
 
     // Print
     new Signature("safe_print_str", new int[] {I32}, new int[] {}),

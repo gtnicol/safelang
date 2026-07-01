@@ -14,6 +14,7 @@ public final class CCompiler implements SafeCompiler {
   public SafeCompileResult compile(final CompileRequest request) throws Exception {
     final var generator = new CCodeGenerator();
     generator.setRegistry(request.registry());
+    generator.setCapabilities(request.capabilities());
     final var code = generator.generate(request.program());
     final var output = request.withExtension(".c");
     Files.writeString(output, code);

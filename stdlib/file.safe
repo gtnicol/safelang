@@ -24,6 +24,23 @@ public boolean valid(File f) { return filevalid(f.id); }
 public ReadResult read(string path) { return fileload(path); }
 public WriteResult write(string path, string content) { return filesave(path, content); }
 
+// ---- Streaming file I/O (additive; the whole-file API above is unchanged) ----
+// A stream reads/writes incrementally so large files are processed without buffering them in memory.
+// The s* operations are builtins exposed directly under the module (file:sopen, file:sline, ...):
+//   file:sopen(path, mode)  -> StreamResult   (mode "r" read, "w" truncate, "a" append)
+//   file:sline(s)           -> LineResult      (Line(text) / End at EOF)
+//   file:sread(s, count)    -> ReadResult      (empty string at EOF)
+//   file:swrite(s, content) -> WriteResult     (write-through, no whole-file buffer)
+//   file:sflush(s)          -> WriteResult
+//   file:sclose(s)          -> void
+public type Stream {
+    public const int id;
+    public const string path;
+}
+
+public enum StreamResult { Ok(Stream), Err(string) }
+public enum LineResult { Line(string), End, Err(string) }
+
 // Path-based utilities (kept from old API)
 public boolean exists(string path) { return exists(path); }
 public boolean delete(string path) { return delete(path); }

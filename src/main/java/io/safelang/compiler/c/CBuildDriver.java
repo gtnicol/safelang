@@ -3,6 +3,7 @@ package io.safelang.compiler.c;
 import io.safelang.SAFEException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 
@@ -58,6 +59,16 @@ public final class CBuildDriver {
     command.add(binary.toString());
     command.add(source.toString());
     command.add("-lm");
+    // Link the optional network/TLS libraries only when the generated source opts in via the
+    // matching SAFE_ENABLE_* marker, so plaintext/non-network builds stay dependency-free.
+    final var generated = read(source);
+    if (generated.contains("#define SAFE_ENABLE_HTTP")) {
+      command.add("-lcurl");
+    }
+    if (generated.contains("#define SAFE_ENABLE_TLS")) {
+      command.add("-lssl");
+      command.add("-lcrypto");
+    }
     try {
       final var process = new ProcessBuilder(command).redirectErrorStream(true).start();
       final var output =
@@ -76,6 +87,14 @@ public final class CBuildDriver {
     } catch (final InterruptedException exception) {
       Thread.currentThread().interrupt();
       throw new SAFEException(compiler + " invocation interrupted", exception);
+    }
+  }
+
+  private static String read(final Path source) {
+    try {
+      return Files.readString(source);
+    } catch (final IOException exception) {
+      return "";
     }
   }
 }

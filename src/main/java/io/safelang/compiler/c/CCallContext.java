@@ -24,6 +24,15 @@ interface CCallContext {
   /** Translate a SAFE type to its C type. */
   String translate(String type);
 
+  /** Best-effort SAFE type inference. */
+  String infer(ASTNode node);
+
+  /**
+   * Whether {@code node} produces a FRESH, OWNED heap value (a +1 the receiver must release) — used
+   * to release throwaway heap temporaries passed to a borrowing function.
+   */
+  boolean isFreshHeap(ASTNode node);
+
   /** {@code fn<P1, P2, ..., R>} → ordered list of all type parameters. */
   List<String> params(String fnType);
 

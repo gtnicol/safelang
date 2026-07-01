@@ -16,7 +16,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Objects;
 import java.util.function.Consumer;
 
 /**
@@ -36,37 +35,28 @@ public final class SafeRuntime {
    * Default warning sink: prints to {@link System#err} with a {@code WARNING:} prefix. Matches the
    * format the CLI has historically used from the {@code ast} command.
    */
-  private static final Consumer<String> DEFAULT_WARNINGS =
+  /**
+   * Default warning sink: prints to {@link System#err} with a {@code WARNING:} prefix. The warning
+   * sink is now a <em>per-call parameter</em> rather than mutable global state — every entry point
+   * defaults to this, and callers that need to capture warnings pass their own sink to the
+   * sink-accepting overloads. This keeps concurrent compilations on different threads from racing
+   * on a shared sink.
+   */
+  public static final Consumer<String> DEFAULT_WARNINGS =
       message -> System.err.println("WARNING: " + message);
 
-  private static volatile Consumer<String> warnings = DEFAULT_WARNINGS;
-
-  /**
-   * Install a custom sink for analyzer warnings. Every subsequent call to {@link #run}, {@link
-   * #compile}, {@link #build}, {@link #bytecode}, and {@link #wasm} routes each warning produced
-   * during semantic analysis through the sink. Pass {@code message -> {}} to silence warnings.
-   *
-   * <p>Affects the JVM globally — call {@link #resetWarnings} to restore the stderr default.
-   */
-  public static void setWarnings(final Consumer<String> sink) {
-    warnings = Objects.requireNonNull(sink, "warning sink");
-  }
-
-  /** Restore the default warning sink (stderr with {@code WARNING:} prefix). */
-  public static void resetWarnings() {
-    warnings = DEFAULT_WARNINGS;
-  }
-
-  /**
-   * Route a list of analyzer warnings through the installed sink. Public so alternate drivers (e.g.
-   * {@link TestRunner}) can surface warnings the same way every {@code SafeRuntime} entry point
-   * does without duplicating the stderr-vs-sink dispatch.
-   */
-  public static void emit(final List<String> list) {
-    final var sink = warnings;
+  /** Route a list of analyzer warnings to {@code sink}. */
+  public static void emit(final List<String> list, final Consumer<String> sink) {
     for (final var message : list) {
       sink.accept(message);
     }
+  }
+
+  /**
+   * Route warnings to the default stderr sink (convenience for drivers like {@link TestRunner}).
+   */
+  public static void emit(final List<String> list) {
+    emit(list, DEFAULT_WARNINGS);
   }
 
   /** Parse and semantically validate a SAFE source. Warnings are NOT emitted — caller decides. */
@@ -99,9 +89,65 @@ public final class SafeRuntime {
       final List<String> arguments,
       final boolean strict,
       final List<Path> modulePath) {
+    run(source, filename, arguments, strict, modulePath, io.safelang.runtime.Capabilities.none());
+  }
+
+  public static void run(
+      final String source,
+      final String filename,
+      final List<String> arguments,
+      final boolean strict,
+      final List<Path> modulePath,
+      final io.safelang.runtime.Capabilities capabilities) {
+    run(
+        source,
+        filename,
+        arguments,
+        strict,
+        modulePath,
+        io.safelang.runtime.HostPolicy.of(capabilities));
+  }
+
+  public static void run(
+      final String source,
+      final String filename,
+      final List<String> arguments,
+      final boolean strict,
+      final List<Path> modulePath,
+      final io.safelang.runtime.HostPolicy policy) {
+    run(source, filename, arguments, strict, modulePath, policy, DEFAULT_WARNINGS);
+  }
+
+  /** Capture analyzer warnings via {@code warnings} instead of the default stderr sink. */
+  public static void run(
+      final String source,
+      final String filename,
+      final List<String> arguments,
+      final boolean strict,
+      final Consumer<String> warnings) {
+    // The warning-capture overloads are a build-tooling convenience (inspecting your own program),
+    // so they stay permissive; the primary no-policy overloads deny by default.
+    run(
+        source,
+        filename,
+        arguments,
+        strict,
+        List.of(),
+        io.safelang.runtime.HostPolicy.trusted(),
+        warnings);
+  }
+
+  public static void run(
+      final String source,
+      final String filename,
+      final List<String> arguments,
+      final boolean strict,
+      final List<Path> modulePath,
+      final io.safelang.runtime.HostPolicy policy,
+      final Consumer<String> warnings) {
     final var parsed = parse(source, filename, strict, modulePath);
-    emit(parsed.warnings());
-    final var interpreter = new Interpreter(arguments);
+    emit(parsed.warnings(), warnings);
+    final var interpreter = new Interpreter(arguments, policy);
     interpreter.setRegistry(parsed.registry());
     interpreter.interpret(parsed.program());
   }
@@ -117,7 +163,33 @@ public final class SafeRuntime {
       final String filename,
       final boolean strict,
       final List<Path> modulePath) {
-    return invoke(new CCompiler(), source, filename, strict, modulePath);
+    return compile(source, filename, strict, modulePath, io.safelang.runtime.Capabilities.none());
+  }
+
+  public static SafeCompileResult compile(
+      final String source,
+      final String filename,
+      final boolean strict,
+      final List<Path> modulePath,
+      final io.safelang.runtime.Capabilities capabilities) {
+    return invoke(
+        new CCompiler(), source, filename, strict, modulePath, capabilities, DEFAULT_WARNINGS);
+  }
+
+  /** Compile to C, capturing analyzer warnings via {@code warnings} instead of stderr. */
+  public static SafeCompileResult compile(
+      final String source,
+      final String filename,
+      final boolean strict,
+      final Consumer<String> warnings) {
+    return invoke(
+        new CCompiler(),
+        source,
+        filename,
+        strict,
+        List.of(),
+        io.safelang.runtime.Capabilities.all(),
+        warnings);
   }
 
   /** Compile a SAFE source to a bytecode {@code .safeb} file. */
@@ -131,7 +203,39 @@ public final class SafeRuntime {
       final String filename,
       final boolean strict,
       final List<Path> modulePath) {
-    return invoke(new BytecodeCompilerService(), source, filename, strict, modulePath);
+    return bytecode(source, filename, strict, modulePath, io.safelang.runtime.Capabilities.none());
+  }
+
+  public static SafeCompileResult bytecode(
+      final String source,
+      final String filename,
+      final boolean strict,
+      final List<Path> modulePath,
+      final io.safelang.runtime.Capabilities capabilities) {
+    return invoke(
+        new BytecodeCompilerService(),
+        source,
+        filename,
+        strict,
+        modulePath,
+        capabilities,
+        DEFAULT_WARNINGS);
+  }
+
+  /** Compile to bytecode, capturing analyzer warnings via {@code warnings} instead of stderr. */
+  public static SafeCompileResult bytecode(
+      final String source,
+      final String filename,
+      final boolean strict,
+      final Consumer<String> warnings) {
+    return invoke(
+        new BytecodeCompilerService(),
+        source,
+        filename,
+        strict,
+        List.of(),
+        io.safelang.runtime.Capabilities.all(),
+        warnings);
   }
 
   /** Compile a SAFE source to a WebAssembly module {@code .wasm} file. */
@@ -145,7 +249,39 @@ public final class SafeRuntime {
       final String filename,
       final boolean strict,
       final List<Path> modulePath) {
-    return invoke(new WebAssemblyCompilerService(), source, filename, strict, modulePath);
+    return wasm(source, filename, strict, modulePath, io.safelang.runtime.Capabilities.none());
+  }
+
+  public static SafeCompileResult wasm(
+      final String source,
+      final String filename,
+      final boolean strict,
+      final List<Path> modulePath,
+      final io.safelang.runtime.Capabilities capabilities) {
+    return invoke(
+        new WebAssemblyCompilerService(),
+        source,
+        filename,
+        strict,
+        modulePath,
+        capabilities,
+        DEFAULT_WARNINGS);
+  }
+
+  /** Compile to WASM, capturing analyzer warnings via {@code warnings} instead of stderr. */
+  public static SafeCompileResult wasm(
+      final String source,
+      final String filename,
+      final boolean strict,
+      final Consumer<String> warnings) {
+    return invoke(
+        new WebAssemblyCompilerService(),
+        source,
+        filename,
+        strict,
+        List.of(),
+        io.safelang.runtime.Capabilities.all(),
+        warnings);
   }
 
   /** Compile a SAFE source to a self-contained executable JVM jar. */
@@ -159,7 +295,23 @@ public final class SafeRuntime {
       final String filename,
       final boolean strict,
       final List<Path> modulePath) {
-    return invoke(new JvmCompilerService(), source, filename, strict, modulePath);
+    return jvm(source, filename, strict, modulePath, io.safelang.runtime.Capabilities.none());
+  }
+
+  public static SafeCompileResult jvm(
+      final String source,
+      final String filename,
+      final boolean strict,
+      final List<Path> modulePath,
+      final io.safelang.runtime.Capabilities capabilities) {
+    return invoke(
+        new JvmCompilerService(),
+        source,
+        filename,
+        strict,
+        modulePath,
+        capabilities,
+        DEFAULT_WARNINGS);
   }
 
   /**
@@ -182,7 +334,17 @@ public final class SafeRuntime {
       final String filename,
       final boolean strict,
       final List<Path> modulePath) {
-    final var request = requestAndWarn(source, filename, strict, modulePath);
+    return build(source, filename, strict, modulePath, io.safelang.runtime.Capabilities.none());
+  }
+
+  public static Path build(
+      final String source,
+      final String filename,
+      final boolean strict,
+      final List<Path> modulePath,
+      final io.safelang.runtime.Capabilities capabilities) {
+    final var request =
+        requestAndWarn(source, filename, strict, modulePath, capabilities, DEFAULT_WARNINGS);
     final SafeCompileResult compiled;
     try {
       compiled = new CCompiler().compile(request);
@@ -198,9 +360,27 @@ public final class SafeRuntime {
 
   /** Load and execute a compiled bytecode {@code .safeb} file. */
   public static void vm(final String filename, final List<String> arguments) {
+    vm(filename, arguments, io.safelang.runtime.Capabilities.none());
+  }
+
+  /**
+   * Load and execute a {@code .safeb} file under a capability policy. Bytecode bypasses source
+   * analysis, so this is where an embedder running untrusted bytecode must restrict host access.
+   */
+  public static void vm(
+      final String filename,
+      final List<String> arguments,
+      final io.safelang.runtime.Capabilities capabilities) {
+    vm(filename, arguments, io.safelang.runtime.HostPolicy.of(capabilities));
+  }
+
+  public static void vm(
+      final String filename,
+      final List<String> arguments,
+      final io.safelang.runtime.HostPolicy policy) {
     try {
       final var module = new BytecodeReader().load(filename);
-      new BytecodeVM(module, arguments).execute();
+      new BytecodeVM(module, arguments, policy).execute();
     } catch (final SAFEException pass) {
       throw pass;
     } catch (final IOException exception) {
@@ -228,14 +408,17 @@ public final class SafeRuntime {
       final String source,
       final String filename,
       final boolean strict,
-      final List<Path> modulePath) {
+      final List<Path> modulePath,
+      final io.safelang.runtime.Capabilities capabilities,
+      final Consumer<String> warnings) {
     final var parsed = parse(source, filename, strict, modulePath);
-    emit(parsed.warnings());
+    emit(parsed.warnings(), warnings);
     if (filename == null) {
       throw new IllegalArgumentException(
           "SafeRuntime: filename is required for compile/build/bytecode/wasm");
     }
-    return new CompileRequest(Path.of(filename), parsed.program(), parsed.registry(), strict);
+    return new CompileRequest(
+        Path.of(filename), parsed.program(), parsed.registry(), strict, capabilities);
   }
 
   /**
@@ -247,8 +430,11 @@ public final class SafeRuntime {
       final String source,
       final String filename,
       final boolean strict,
-      final List<Path> modulePath) {
-    final var request = requestAndWarn(source, filename, strict, modulePath);
+      final List<Path> modulePath,
+      final io.safelang.runtime.Capabilities capabilities,
+      final Consumer<String> warnings) {
+    final var request =
+        requestAndWarn(source, filename, strict, modulePath, capabilities, warnings);
     try {
       return compiler.compile(request);
     } catch (final SAFEException pass) {

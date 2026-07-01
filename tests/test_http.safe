@@ -1,0 +1,32 @@
+program test_http;
+import std;
+// Selective import: pulls only the constructors + result type, so the native build links neither
+// libcurl nor OpenSSL (the TLS serve trampolines are not emitted).
+import http { response, response_with, HttpResult, Response };
+import test;
+
+// Constructors and field access (the network round-trip is covered by HttpBuiltinsTests, since a
+// blocking server and a client cannot run concurrently within one single-threaded SAFE program).
+string describe(HttpResult h) {
+    return case h of {
+        Ok(resp): "ok:" + std:str(resp.status) + ":" + resp.body;
+        Err(e): "err:" + e;
+    };
+}
+
+Response plain = http:response(200, "ok");
+Response custom = http:response_with(201, "made", {"X-Tag": "yes"});
+
+test:suite("http:response", [
+    fn() -> test:equal(std:str(plain.status), "200", "plain status"),
+    fn() -> test:equal(plain.body, "ok", "plain body"),
+    fn() -> test:equal(std:str(custom.status), "201", "custom status"),
+    fn() -> test:equal(custom.body, "made", "custom body")
+]);
+
+test:suite("HttpResult matching", [
+    fn() -> test:equal(describe(Ok(http:response(204, "x"))), "ok:204:x", "Ok variant"),
+    fn() -> test:equal(describe(Err("boom")), "err:boom", "Err variant")
+]);
+
+test:done();

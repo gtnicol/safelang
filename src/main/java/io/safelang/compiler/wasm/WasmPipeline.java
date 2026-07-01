@@ -28,9 +28,17 @@ public final class WasmPipeline {
   private static final int MAX_ARITY = 8;
 
   private final ModuleRegistry registry;
+  private final io.safelang.runtime.Capabilities capabilities;
 
   public WasmPipeline(final ModuleRegistry registry) {
+    this(registry, io.safelang.runtime.Capabilities.all());
+  }
+
+  public WasmPipeline(
+      final ModuleRegistry registry, final io.safelang.runtime.Capabilities capabilities) {
     this.registry = registry;
+    this.capabilities =
+        capabilities != null ? capabilities : io.safelang.runtime.Capabilities.all();
   }
 
   /**
@@ -183,7 +191,8 @@ public final class WasmPipeline {
 
       final var symbols = new ModuleSymbols();
       final var compiler =
-          new WasmCompiler(module, false, types, symbols, registry, dataOffset, tableOffset);
+          new WasmCompiler(
+              module, false, types, symbols, registry, dataOffset, tableOffset, capabilities);
       compiled.put(module, compiler.compile(source));
       dataOffset = compiler.dataEnd();
       tableOffset = compiler.tableEnd();
@@ -193,7 +202,14 @@ public final class WasmPipeline {
     final var symbols = new ModuleSymbols();
     final var compiler =
         new WasmCompiler(
-            TypeRegistry.MAIN, true, types, symbols, registry, dataOffset, tableOffset);
+            TypeRegistry.MAIN,
+            true,
+            types,
+            symbols,
+            registry,
+            dataOffset,
+            tableOffset,
+            capabilities);
     final var binary = compiler.compile(program);
 
     return new CompileResult(compiled, binary);

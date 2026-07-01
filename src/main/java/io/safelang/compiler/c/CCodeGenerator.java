@@ -53,6 +53,37 @@ public class CCodeGenerator implements ASTVisitor<String> {
   private int counter;
   private Map<String, String> aliases;
 
+  // Builtin-arg ownership convention (see gatedResolve). A FRESH heap value passed straight to a
+  // borrowing builtin (`sort(keys(m))`) leaks the throwaway, because builtins are C functions
+  // outside the Step-5 param discipline. We auto-release such an arg after the call — but only in a
+  // provably-safe double-gated case: the arg's PRODUCER returns an *untyped* list (structure-only
+  // disposal; elements are arena copies or owned elsewhere, never freed by the release) AND the
+  // CONSUMER only borrows the arg (never stores/consumes it). Both sets are deliberately small; an
+  // arg that fails either gate is left as-is (a leak, never a use-after-free). `values` is excluded
+  // (its `_ptr` variant returns a typed, retaining list — releasing it can dangle a borrowed
+  // alias).
+  private static final Set<String> DISPOSABLE_PRODUCERS =
+      Set.of("keys", "sort", "slice", "reverse");
+  private static final Set<String> BORROW_CONSUMERS =
+      Set.of(
+          "sort",
+          "size",
+          "contains",
+          "reverse",
+          "slice",
+          "unique",
+          "count",
+          "any",
+          "all",
+          "sum",
+          "join",
+          "minimum",
+          "maximum");
+  private final Map<ASTNode, String> emitOverrides = new IdentityHashMap<>();
+  // AOT capability set, fixed at build time. Default grants everything (trusted local build); a
+  // restricted build (--deny/--allow) refuses to emit a builtin whose capability is not granted.
+  private io.safelang.runtime.Capabilities capabilities = io.safelang.runtime.Capabilities.all();
+
   public CCodeGenerator() {
     this.output = new StringBuilder();
     this.indent = 0;
@@ -113,6 +144,85 @@ public class CCodeGenerator implements ASTVisitor<String> {
 
   public void setRegistry(final ModuleRegistry registry) {
     this.registry = registry;
+  }
+
+  public void setCapabilities(final io.safelang.runtime.Capabilities capabilities) {
+    if (capabilities != null) {
+      this.capabilities = capabilities;
+    }
+  }
+
+  /** Refuse, at compile time, to emit a builtin whose host capability the build did not grant. */
+  private String gatedResolve(final String name, final List<ASTNode> arguments) {
+    final var capability = io.safelang.runtime.BuiltinRegistry.capability(name);
+    if (capability != null && !capabilities.granted(capability)) {
+      throw new io.safelang.SAFEException(
+          "builtin '"
+              + name
+              + "' requires capability "
+              + capability
+              + ", which this build did not grant; rebuild with --allow "
+              + capability.name().toLowerCase());
+    }
+    if (!io.safelang.runtime.BuiltinRegistry.isBuiltin(name) || !BORROW_CONSUMERS.contains(name)) {
+      return builtins.resolve(name, arguments);
+    }
+    return resolveReleasing(name, arguments);
+  }
+
+  /**
+   * Resolve a borrow-only builtin call, releasing any FRESH untyped-list argument after the call so
+   * the throwaway does not leak. Each disposable arg is bound to a temp (the builtin call is
+   * rewritten to reference the temp via {@link #emitOverrides}); the whole call becomes a GCC
+   * statement expression that evaluates the builtin once, releases the temps, and yields the
+   * result.
+   */
+  private String resolveReleasing(final String name, final List<ASTNode> arguments) {
+    final var releasable = new ArrayList<ASTNode>();
+    for (final var arg : arguments) {
+      if (disposableListArg(arg)) releasable.add(arg);
+    }
+    if (releasable.isEmpty()) return builtins.resolve(name, arguments);
+
+    final var inits = new StringBuilder();
+    final var temps = new ArrayList<String>();
+    for (final var arg : releasable) {
+      final var code = arg.accept(this); // emit BEFORE the override so it is the real expression
+      final var temp = "__ba_" + counter++ + "__";
+      temps.add(temp);
+      inits.append("SAFEList* ").append(temp).append(" = ").append(code).append("; ");
+      emitOverrides.put(arg, temp);
+    }
+    final String call;
+    try {
+      call = builtins.resolve(name, arguments); // re-emits each releasable arg as its temp
+    } finally {
+      for (final var arg : releasable) emitOverrides.remove(arg);
+    }
+    if (call == null) return null; // arg types declined the builtin — fall through, temps discarded
+    final var releases = new StringBuilder();
+    for (final var temp : temps) releases.append("safe_release(").append(temp).append("); ");
+    return "({ "
+        + inits
+        + "__typeof__("
+        + call
+        + ") __bret__ = ("
+        + call
+        + "); "
+        + releases
+        + "__bret__; })";
+  }
+
+  /**
+   * True when {@code arg} is a call to a builtin that produces a fresh UNTYPED list (structure-only
+   * disposal) — safe to release after a borrowing consumer. A user function cannot reach here: a
+   * name that {@code isBuiltin} always resolves to the builtin (builtins take call priority).
+   */
+  private boolean disposableListArg(final ASTNode arg) {
+    if (!(arg instanceof FunctionCallNode call)) return false;
+    if (!DISPOSABLE_PRODUCERS.contains(call.name())) return false;
+    final var type = infer(arg);
+    return type != null && type.startsWith("list<");
   }
 
   private String mangle(final String module, final String name) {
@@ -289,7 +399,10 @@ public class CCodeGenerator implements ASTVisitor<String> {
       }
     }
 
-    // Generate include for runtime header
+    // Generate include for runtime header. The feature placeholder is replaced at the end with
+    // #define markers (SAFE_ENABLE_HTTP / SAFE_ENABLE_TLS) gating the optional libcurl/OpenSSL
+    // sections of safe_runtime.h, derived from a scan of the emitted body.
+    line(FEATURE_DEFINES_MARKER);
     line("#include \"safe_runtime.h\"");
     line("");
 
@@ -317,19 +430,24 @@ public class CCodeGenerator implements ASTVisitor<String> {
     // macros that expand to runtime helpers defined in safe_runtime.h so a binary reflects the
     // machine it runs on, matching interpreter/bytecode behavior.
     line("const char* VERSION = \"1.0\";");
-    line("#define OS safe_os()");
-    line("#define ARCH safe_arch()");
-    line("#define OS_VERSION safe_osversion()");
-    line("#define PLATFORM safe_platform()");
     line("const int64_t MAX_LIST_SIZE = " + SAFEValue.MAX_LIST_SIZE + ";");
     line("const int64_t MAX_TUPLE_SIZE = " + SAFEValue.MAX_TUPLE_SIZE + ";");
     variables().put("VERSION", "string");
-    variables().put("PLATFORM", "string");
     variables().put("MAX_LIST_SIZE", "int");
     variables().put("MAX_TUPLE_SIZE", "int");
-    variables().put("OS", "string");
-    variables().put("ARCH", "string");
-    variables().put("OS_VERSION", "string");
+    // Host-dependent globals require ENVIRONMENT — only emit them when granted, so a restricted
+    // build refuses to expose host state (a reference then fails to compile, matching the AOT
+    // builtin gate). VERSION/MAX_* are deterministic constants and stay ungated.
+    if (capabilities.granted(io.safelang.runtime.Capability.ENVIRONMENT)) {
+      line("#define OS safe_os()");
+      line("#define ARCH safe_arch()");
+      line("#define OS_VERSION safe_osversion()");
+      line("#define PLATFORM safe_platform()");
+      variables().put("PLATFORM", "string");
+      variables().put("OS", "string");
+      variables().put("ARCH", "string");
+      variables().put("OS_VERSION", "string");
+    }
     line("");
 
     // Phase 0: Flatten imported modules
@@ -491,6 +609,7 @@ public class CCodeGenerator implements ASTVisitor<String> {
       line("int main(int argc, char* argv[]) {");
       indent++;
       line("safe_init_args(argc, argv);");
+      line("safe_init_policy_from_env();");
 
       // Module initialization code (const vars from modules)
       for (final var init : initializers) {
@@ -508,6 +627,7 @@ public class CCodeGenerator implements ASTVisitor<String> {
           line(code);
         }
       }
+      line("safe_collect_cycles();");
       line("safe_arena_free();");
       line("return 0;");
       indent--;
@@ -532,9 +652,21 @@ public class CCodeGenerator implements ASTVisitor<String> {
     for (final var stringifier : stringifierDefs) {
       defs.append(stringifier).append("\n\n");
     }
-    final var result = output.toString();
-    return result.replace(marker + "\n", defs.toString());
+    final var spliced = output.toString().replace(marker + "\n", defs.toString());
+    final var features = new StringBuilder();
+    if (spliced.contains("safe_http_request(")) {
+      features.append("#define SAFE_ENABLE_HTTP\n");
+    }
+    // Conservative: if either TLS serve trampoline is emitted, enable the OpenSSL section. Programs
+    // wanting a libcurl-only / plaintext-only native build can import http selectively.
+    if (spliced.contains("safe__http_serve_tls")
+        || spliced.contains("safe__http_serve_until_tls")) {
+      features.append("#define SAFE_ENABLE_TLS\n");
+    }
+    return spliced.replace(FEATURE_DEFINES_MARKER + "\n", features.toString());
   }
+
+  private static final String FEATURE_DEFINES_MARKER = "/*__SAFE_FEATURE_DEFINES__*/";
 
   private void forward(final FunctionDeclarationNode function, final String name) {
     final var returns = translate(function.returns().fullName());
@@ -668,6 +800,8 @@ public class CCodeGenerator implements ASTVisitor<String> {
           if (isHeapRc(dtype)) {
             indent(builder);
             builder.append("safe_release(").append(mangle(decl.name())).append(");\n");
+          } else {
+            releaseTupleElements(builder, mangle(decl.name()), dtype);
           }
         }
       }
@@ -771,20 +905,37 @@ public class CCodeGenerator implements ASTVisitor<String> {
    */
   private void emitParamStructFieldReleases(
       final StringBuilder builder, final List<ParameterNode> params) {
+    emitParamReleases(builder, params, null);
+  }
+
+  /**
+   * Release every heap parameter at a function exit (Step 5): heap FIELDS of struct params and the
+   * whole pointer of non-struct heap params (bytes/list/map/set/fn). Skips {@code skipName} — the
+   * variable being returned — so an identity passthrough (`return p;`) does not free the value it
+   * yields. Paired with the caller-side retain of BORROWED heap args in {@link
+   * #wrapStructArgForCall}.
+   */
+  private void emitParamReleases(
+      final StringBuilder builder, final List<ParameterNode> params, final String skipName) {
     for (final var param : params) {
+      if (skipName != null && skipName.equals(param.name())) continue;
       final var type = param.type().fullName();
       final var struct = structs.get(type);
-      if (struct == null) continue;
-      for (final var field : struct.fields()) {
-        if (isHeapRc(field.type().fullName())) {
-          indent(builder);
-          builder
-              .append("safe_release(")
-              .append(mangle(param.name()))
-              .append(".")
-              .append(mangle(field.name()))
-              .append(");\n");
+      if (struct != null) {
+        for (final var field : struct.fields()) {
+          if (isHeapRc(field.type().fullName())) {
+            indent(builder);
+            builder
+                .append("safe_release(")
+                .append(mangle(param.name()))
+                .append(".")
+                .append(mangle(field.name()))
+                .append(");\n");
+          }
         }
+      } else if (isHeapRc(type)) {
+        indent(builder);
+        builder.append("safe_release(").append(mangle(param.name())).append(");\n");
       }
     }
   }
@@ -804,7 +955,32 @@ public class CCodeGenerator implements ASTVisitor<String> {
         if (isHeapRc(dtype)) {
           indent(builder);
           builder.append("safe_release(").append(mangle(decl.name())).append(");\n");
+        } else {
+          releaseTupleElements(builder, mangle(decl.name()), dtype);
         }
+      }
+    }
+  }
+
+  /**
+   * A tuple is an inline value struct ({@link SAFETuple}); release its heap-RC elements at scope
+   * exit (mirroring {@code safe_dispose_tuple}). This balances the {@code safe_retain} a function
+   * emits when packing heap elements into a returned tuple — without it a tuple local (e.g. {@code
+   * (bytes, list<...>) loaded = f()}) leaks its element references. No-op for non-tuple types.
+   */
+  private void releaseTupleElements(
+      final StringBuilder builder, final String mangled, final String type) {
+    if (type == null || !type.startsWith("tuple<") || !type.endsWith(">")) return;
+    final var elements = split(type.substring(6, type.length() - 1));
+    for (int i = 0; i < elements.size(); i++) {
+      if (isHeapRc(elements.get(i).trim())) {
+        indent(builder);
+        builder
+            .append("safe_release(")
+            .append(mangled)
+            .append(".elements[")
+            .append(i)
+            .append("].ptr_val);\n");
       }
     }
   }
@@ -835,7 +1011,22 @@ public class CCodeGenerator implements ASTVisitor<String> {
     final var type = infer(argNode);
     if (type == null) return argCode;
     final var struct = structs.get(type);
-    if (struct == null) return argCode;
+    if (struct == null) {
+      // Step 5 — non-struct heap arg (bytes/list/map/set/fn). The callee releases every heap param
+      // at
+      // exit, so BORROWED (aliased) args must be retained here to stay balanced; a FRESH producer
+      // TRANSFERS its +1 into that release (no retain). The returned-param skip keeps an escaping
+      // arg
+      // alive, and a stored arg's own store-retain survives the param-release.
+      if (isHeapRc(type) && !isFreshRhs(argNode)) {
+        return "({ "
+            + translate(type)
+            + " __rc_arg__ = "
+            + argCode
+            + "; safe_retain(__rc_arg__); __rc_arg__; })";
+      }
+      return argCode;
+    }
     final var retains = new StringBuilder();
     for (final var field : struct.fields()) {
       if (isHeapRc(field.type().fullName())) {
@@ -843,19 +1034,42 @@ public class CCodeGenerator implements ASTVisitor<String> {
       }
     }
     if (retains.length() == 0) return argCode;
-    // Phase 5.3 attempted to skip the retain for fresh struct producers
-    // (queue:create() passed directly to enqueue(...)) on the theory
-    // that a fresh refs=1 allocation already covers the callee's
-    // param-release. It doesn't: safe_list_append_copy_int's unique-
-    // owner fast path mutates the fresh list in place (same pointer),
-    // so when the callee's param-release drops items.refs from 1 to 0
-    // the block disposes and the returned Queue points to freed data.
+    // A struct LITERAL whose heap fields are all ALIASED (`flush(LSM { memtable: table, .. })`)
+    // already
+    // retained each field in visitObjectCreation (`.f = safe_retain(x)`), so the literal owns a
+    // counted
+    // ref the callee's param-release consumes. Wrapping it again here is a second, unbalanced
+    // retain
+    // that leaks the field — for lsm this pins the whole memtable every flush. Skip the wrap for
+    // that
+    // case: the field-init retain balances the callee release, and refs>=2 during the call still
+    // forces
+    // any append fast path onto the copy path, so there is no in-place-share use-after-free.
     //
-    // Keep the over-retain on fresh args — one leaked refcount per
-    // fresh struct arg is accepted; the caller's arg expression had no
-    // slot to release into anyway. Revert planned for when we emit a
-    // matching post-call release on the fresh-arg site.
+    // The over-retain is KEPT for every other struct arg: an aliased struct VARIABLE (the retain
+    // balances the callee release; the variable keeps its own ref) and — critically — a FRESH
+    // FunctionCallNode struct (Phase 5.3: `enqueue(queue:create())`, where a refs==1 list field
+    // mutated
+    // in place by the append fast path would be freed by the callee's param-release, dangling the
+    // returned struct) and a literal with any FRESH heap field.
+    if (argNode instanceof ObjectCreationNode literal && allHeapFieldsAliased(literal)) {
+      return argCode;
+    }
     return "({ " + type + " __rc_arg__ = " + argCode + "; " + retains + "__rc_arg__; })";
+  }
+
+  /**
+   * True if every heap-RC field initializer of a struct literal is ALIASED (borrowed), so
+   * visitObjectCreation retained it and the literal already owns a counted ref. A FRESH heap field
+   * (refs==1, transferred not retained) returns false — wrapping such a literal is still needed.
+   */
+  private boolean allHeapFieldsAliased(final ObjectCreationNode literal) {
+    for (final var assignment : literal.fields()) {
+      if (isHeapRc(infer(assignment.value())) && isFreshRhs(assignment.value())) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private void forwards(final ProgramNode program) {
@@ -1189,23 +1403,36 @@ public class CCodeGenerator implements ASTVisitor<String> {
       // sometimes returns the existing value) doesn't free data the RHS
       // still points at.
       if (type != null && !isHeapRc(type) && structs.containsKey(type)) {
+        // When the RHS provably CONSTRUCTS its struct (owns its fields — e.g. `db = lsm:put(db,..)`
+        // returning a fresh Lsm), the old field's ref MUST be released unconditionally: the new
+        // struct
+        // carries the same field pointer *retained*, so the `!=` guard would skip the drop and leak
+        // the
+        // old ref every reassignment (the container never disposes). For a passthrough that may
+        // return
+        // a BORROWED field, keep the pointer guard so shared data is never freed while still live.
+        final var owns = reassignOwnsFields(node.value());
         final var release = new StringBuilder();
         final var struct = structs.get(type);
         for (final var field : struct.fields()) {
           if (isHeapRc(field.type().fullName())) {
             final var f = mangle(field.name());
-            release
-                .append("if (__rc_new__.")
-                .append(f)
-                .append(" != ")
-                .append(target)
-                .append(".")
-                .append(f)
-                .append(") safe_release(")
-                .append(target)
-                .append(".")
-                .append(f)
-                .append("); ");
+            if (owns) {
+              release.append("safe_release(").append(target).append(".").append(f).append("); ");
+            } else {
+              release
+                  .append("if (__rc_new__.")
+                  .append(f)
+                  .append(" != ")
+                  .append(target)
+                  .append(".")
+                  .append(f)
+                  .append(") safe_release(")
+                  .append(target)
+                  .append(".")
+                  .append(f)
+                  .append("); ");
+            }
           }
         }
         if (release.length() > 0) {
@@ -1262,7 +1489,119 @@ public class CCodeGenerator implements ASTVisitor<String> {
    * arms are all fresh. Variable references are NOT fresh (aliasing requires a retain).
    */
   private boolean isFreshRhs(final ASTNode node) {
+    // A MAP index read (`m[k]`) is an OWNED producer: safe_map_get_ptr retains its result
+    // (mirroring
+    // retain-on-insert), so binding it must NOT add a second retain — otherwise the value sits at
+    // refs>=2 and never frees. A LIST/tuple/string index read returns a BORROWED slot, so it stays
+    // non-fresh (needs the codegen retain to own). Container type is resolved as in CIndexCompiler.
+    if (node instanceof IndexAccessNode access) {
+      final String containerType;
+      if (access.container() instanceof VariableReferenceNode ref && ref.parts().size() == 1) {
+        containerType = variables().get(ref.parts().getFirst());
+      } else {
+        containerType = infer(access.container());
+      }
+      return containerType != null && containerType.startsWith("map<");
+    }
     return rc.isFreshProducer(node);
+  }
+
+  /**
+   * Whether reassigning {@code x = value} yields a struct whose heap fields are OWNED — so
+   * releasing the old LHS field is both safe and necessary. True when the RHS CONSTRUCTS its result
+   * (a struct literal, or a call whose every return constructs — transitively), so the new struct
+   * holds its own +1 on each field and the old field's ref can be dropped. False for an
+   * identity-passthrough that returns a BORROWED field (the callee's param-release already consumed
+   * the caller's wrap-retain); there the pointer guard must stay or the shared field is freed while
+   * still live. Conservative: anything not provably constructing returns false (a leak, never a
+   * use-after-free).
+   */
+  private boolean reassignOwnsFields(final ASTNode value) {
+    return constructsStruct(value, null, new java.util.HashSet<>());
+  }
+
+  private boolean constructsStruct(
+      final ASTNode expr, final String module, final java.util.Set<String> visiting) {
+    if (expr instanceof ObjectCreationNode) {
+      return true;
+    }
+    if (expr instanceof IfExpressionNode cond) {
+      return constructsStruct(cond.then(), module, visiting)
+          && cond.otherwise() != null
+          && constructsStruct(cond.otherwise(), module, visiting);
+    }
+    if (expr instanceof FunctionCallNode call) {
+      // An intra-module call is UNPREFIXED in the AST (`flush(..)` inside the lsm module), but
+      // module
+      // functions are registered as `lsm:flush`; carry the enclosing module so the lookup resolves.
+      final var prefix = call.hasPrefix() ? call.prefix() : module;
+      final var key = prefix != null ? prefix + ":" + call.name() : call.name();
+      if (!visiting.add(key)) {
+        return false; // recursion cycle — conservative
+      }
+      var declaration = functions.get(key);
+      if (declaration == null) {
+        declaration = functions.get(call.name());
+      }
+      final var owns =
+          declaration != null && allReturnsConstruct(declaration.body(), prefix, visiting);
+      visiting.remove(key);
+      return owns;
+    }
+    return false; // variable / field / index / literal-scalar — borrowed or not a struct
+    // constructor
+  }
+
+  private boolean allReturnsConstruct(
+      final java.util.List<ASTNode> body,
+      final String module,
+      final java.util.Set<String> visiting) {
+    final var returns = new java.util.ArrayList<ReturnNode>();
+    collectReturns(body, returns);
+    if (returns.isEmpty()) {
+      return false; // no explicit return we can prove — conservative
+    }
+    for (final var statement : returns) {
+      if (!statement.hasExpression()
+          || !constructsStruct(statement.expression(), module, visiting)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private void collectReturns(
+      final java.util.List<ASTNode> nodes, final java.util.List<ReturnNode> out) {
+    for (final var node : nodes) {
+      collectReturns(node, out);
+    }
+  }
+
+  private void collectReturns(final ASTNode node, final java.util.List<ReturnNode> out) {
+    if (node instanceof ReturnNode statement) {
+      out.add(statement);
+    } else if (node instanceof ForStatementNode loop) {
+      collectReturns(loop.body(), out);
+    } else if (node instanceof WhileStatementNode loop) {
+      collectReturns(loop.body(), out);
+    } else if (node instanceof DoExpressionNode block) {
+      collectReturns(block.statements(), out);
+      collectReturns(block.expression(), out);
+    } else if (node instanceof ExpressionStatementNode statement) {
+      collectReturns(statement.expression(), out);
+    } else if (node instanceof IfExpressionNode cond) {
+      collectReturns(cond.then(), out);
+      if (cond.otherwise() != null) {
+        collectReturns(cond.otherwise(), out);
+      }
+    } else if (node instanceof CaseExpressionNode cases) {
+      for (final var branch : cases.branches()) {
+        collectReturns(branch.result(), out);
+      }
+      if (cases.fallback() != null) {
+        collectReturns(cases.fallback(), out);
+      }
+    }
   }
 
   @Override
@@ -1283,6 +1622,13 @@ public class CCodeGenerator implements ASTVisitor<String> {
     indent(builder);
     builder.append(
         "if (__bound__ < 0) { fprintf(stderr, \"While bound must be non-negative, got %lld\\n\", __bound__); exit(1); }\n");
+    indent(builder);
+    builder.append(
+        "if (__bound__ > "
+            + SAFEValue.MAX_WHILE_BOUND
+            + "LL) { fprintf(stderr, \"While loop bound %lld exceeds the maximum of "
+            + SAFEValue.MAX_WHILE_BOUND
+            + "\\n\", __bound__); exit(1); }\n");
     indent(builder);
     builder
         .append("for (int64_t __i__ = 0; __i__ < __bound__ && (")
@@ -1360,7 +1706,7 @@ public class CCodeGenerator implements ASTVisitor<String> {
           builder.append("__decreases_stack_").append(currentFunctionCName()).append(".sp--;\n");
         }
         emitCurrentFunctionBodyLocalReleases(builder, returnedVar);
-        emitParamStructFieldReleases(builder, currentFunction().parameters());
+        emitParamReleases(builder, currentFunction().parameters(), returnedVar);
         indent(builder);
         builder.append("return result;");
         return builder.toString();
@@ -1379,7 +1725,7 @@ public class CCodeGenerator implements ASTVisitor<String> {
         builder.append("__decreases_stack_").append(currentFunctionCName()).append(".sp--;\n");
       }
       emitCurrentFunctionBodyLocalReleases(builder, returnedVar);
-      emitParamStructFieldReleases(builder, currentFunction().parameters());
+      emitParamReleases(builder, currentFunction().parameters(), returnedVar);
       indent(builder);
       builder.append("return;");
       return builder.toString();
@@ -1402,7 +1748,7 @@ public class CCodeGenerator implements ASTVisitor<String> {
           builder.append("__safe_recursion_depth--;\n");
         }
         emitCurrentFunctionBodyLocalReleases(builder, returnedVar);
-        emitParamStructFieldReleases(builder, currentFunction().parameters());
+        emitParamReleases(builder, currentFunction().parameters(), returnedVar);
         indent(builder);
         builder.append("return __result__;");
         return builder.toString();
@@ -1416,14 +1762,14 @@ public class CCodeGenerator implements ASTVisitor<String> {
         indent(builder);
       }
       emitCurrentFunctionBodyLocalReleases(builder, returnedVar);
-      emitParamStructFieldReleases(builder, currentFunction().parameters());
+      emitParamReleases(builder, currentFunction().parameters(), returnedVar);
       builder.append("return;");
       return builder.toString();
     }
 
     if (currentFunction() != null) {
       emitCurrentFunctionBodyLocalReleases(builder, returnedVar);
-      emitParamStructFieldReleases(builder, currentFunction().parameters());
+      emitParamReleases(builder, currentFunction().parameters(), returnedVar);
       indent(builder);
     }
     builder.append("return");
@@ -1601,7 +1947,7 @@ public class CCodeGenerator implements ASTVisitor<String> {
   }
 
   private String resolve(final String name, final List<ASTNode> arguments) {
-    return builtins.resolve(name, arguments);
+    return gatedResolve(name, arguments);
   }
 
   @Override
@@ -1673,14 +2019,24 @@ public class CCodeGenerator implements ASTVisitor<String> {
       if (i > 0) builder.append(",\n");
       final var assign = assignments.get(i);
       indent(builder);
+      // An empty map/list literal in a field carries NO element-kind of its own, so emitting it via
+      // the generic path yields an UNTYPED container (`safe_map_new()`) that neither retains on
+      // insert
+      // nor releases on dispose — a value stored into it then over-releases at the callee's param
+      // exit
+      // (Step 5). Type it from the FIELD's declared type instead, and treat it as fresh (owned, no
+      // retain) — mirroring the typed-empty-collection handling in visitVariableDeclaration.
+      final var declared = structFieldType(node.type(), assign.field());
+      final var typedEmpty = typedEmptyCollection(assign.value(), declared);
       // Phase 7b-2: when a struct literal populates a heap-RC field with an
       // aliased expression (not a fresh function call / allocation), the
       // constructed struct is "owning" a reference that was previously held
       // elsewhere. Retain so the new struct has its own counted reference.
-      final var fieldType = infer(assign.value());
-      final var code = assign.value().accept(this);
+      final var fieldType = declared != null ? declared : infer(assign.value());
+      final var fresh = typedEmpty != null || isFreshRhs(assign.value());
+      final var code = typedEmpty != null ? typedEmpty : assign.value().accept(this);
       final var wrapped =
-          isHeapRc(fieldType) && !isFreshRhs(assign.value())
+          isHeapRc(fieldType) && !fresh
               ? "(" + translate(fieldType) + ")safe_retain(" + code + ")"
               : code;
       builder.append(".").append(mangle(assign.field())).append(" = ").append(wrapped);
@@ -1699,6 +2055,42 @@ public class CCodeGenerator implements ASTVisitor<String> {
   @Override
   public String visitFieldAssignment(final FieldAssignmentNode node) {
     return "." + mangle(node.field()) + " = " + node.value().accept(this);
+  }
+
+  /** The declared SAFE type of {@code field} in struct {@code structType}, or null. */
+  private String structFieldType(final String structType, final String field) {
+    final var struct = structs.get(structType);
+    if (struct == null) return null;
+    for (final var declared : struct.fields()) {
+      if (declared.name().equals(field)) return declared.type().fullName();
+    }
+    return null;
+  }
+
+  /**
+   * If {@code value} is an EMPTY map/list literal and {@code declared} is the matching container
+   * type, return a TYPED constructor (so the container retains on insert / releases on dispose);
+   * else null. An empty literal has no element-kind of its own, so only the declared type carries
+   * the kinds.
+   */
+  private String typedEmptyCollection(final ASTNode value, final String declared) {
+    if (declared == null) return null;
+    if (value instanceof MapLiteralNode map
+        && map.entries().isEmpty()
+        && declared.startsWith("map<")) {
+      final var kkind = safeKindOf(keyed(declared));
+      final var vkind = safeKindOf(valued(declared));
+      return ("0".equals(kkind) && "0".equals(vkind))
+          ? "safe_map_new()"
+          : "safe_map_new_typed(" + kkind + ", " + vkind + ")";
+    }
+    if (value instanceof ListLiteralNode list
+        && list.elements().isEmpty()
+        && declared.startsWith("list<")) {
+      final var ekind = safeKindOf(inner(declared));
+      return "0".equals(ekind) ? "safe_list_new()" : "safe_list_new_typed(" + ekind + ")";
+    }
+    return null;
   }
 
   @Override
@@ -2480,6 +2872,16 @@ public class CCodeGenerator implements ASTVisitor<String> {
     }
 
     @Override
+    public String infer(final ASTNode node) {
+      return CCodeGenerator.this.infer(node);
+    }
+
+    @Override
+    public boolean isFreshHeap(final ASTNode node) {
+      return isHeapRc(CCodeGenerator.this.infer(node)) && isFreshRhs(node);
+    }
+
+    @Override
     public List<String> params(final String fnType) {
       return CCodeGenerator.this.params(fnType);
     }
@@ -2536,7 +2938,7 @@ public class CCodeGenerator implements ASTVisitor<String> {
 
     @Override
     public String resolveBuiltin(final String name, final List<ASTNode> arguments) {
-      return builtins.resolve(name, arguments);
+      return gatedResolve(name, arguments);
     }
 
     @Override
@@ -2871,12 +3273,19 @@ public class CCodeGenerator implements ASTVisitor<String> {
   private final class BuiltinAdapter implements CBuiltinContext {
     @Override
     public String emit(final ASTNode node) {
+      final var override = emitOverrides.get(node);
+      if (override != null) return override;
       return node.accept(CCodeGenerator.this);
     }
 
     @Override
     public String infer(final ASTNode node) {
       return CCodeGenerator.this.infer(node);
+    }
+
+    @Override
+    public boolean isFreshHeap(final ASTNode node) {
+      return isHeapRc(CCodeGenerator.this.infer(node)) && isFreshRhs(node);
     }
 
     @Override

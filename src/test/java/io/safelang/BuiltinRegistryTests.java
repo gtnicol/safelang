@@ -296,6 +296,9 @@ class BuiltinRegistryTests {
 
   @Test
   void totalBuiltinCount() {
-    assertEquals(102, BuiltinRegistry.all().size());
+    // 102 core builtins + 5 network/process builtins (http_get, http_post, http_request,
+    // http_serve, system_exec) + 6 streaming file builtins
+    // (sopen/sclose/sline/sread/swrite/sflush).
+    assertEquals(113, BuiltinRegistry.all().size());
   }
 }

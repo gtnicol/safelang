@@ -63,6 +63,11 @@ final class CNameMangler {
           "FILE",
           "NULL",
           "EOF",
+          // <stdio.h> stream macros — expand before C parsing, so they collide even as
+          // struct members (e.g. system:exec's Output.stdout / .stderr).
+          "stdin",
+          "stdout",
+          "stderr",
           "size_t",
           "ssize_t",
           "time_t",

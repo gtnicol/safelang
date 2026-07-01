@@ -87,37 +87,33 @@ class SafeRuntimeTests {
   }
 
   /**
-   * The sink installed via {@link SafeRuntime#setWarnings} fires for warnings produced by each
-   * public backend entry point. The sink is JVM-global static state — tests save/restore via
-   * try-finally and avoid overlapping concurrent use.
+   * The per-call warning sink fires for warnings produced by each public backend entry point. The
+   * sink is now a parameter (no JVM-global static state), so concurrent compilations on different
+   * threads keep their warnings separate — see {@link #concurrentSinksDoNotInterleave}.
    */
   @Nested
   class WarningSink {
 
+    // Selective io import: the AOT capability gate (now deny-by-default) would otherwise reject the
+    // io:input STDIN wrapper a non-selective `import io;` pulls in. `collections` stays unused to
+    // trigger the warning under test.
     private static final String SOURCE =
         """
         program testwarn;
-        import io;
+        import io { println };
         import collections;
         io:println("hi");
         """;
 
-    private List<String> capture() {
-      final var captured = new ArrayList<String>();
-      SafeRuntime.setWarnings(captured::add);
-      return captured;
-    }
-
     @Test
     void runEmitsWarning() {
-      final var captured = capture();
+      final var captured = new ArrayList<String>();
       final var originalOut = System.out;
       try {
         System.setOut(new PrintStream(new ByteArrayOutputStream()));
-        SafeRuntime.run(SOURCE, "testwarn.safe", List.of(), false);
+        SafeRuntime.run(SOURCE, "testwarn.safe", List.of(), false, captured::add);
       } finally {
         System.setOut(originalOut);
-        SafeRuntime.resetWarnings();
       }
       assertTrue(
           captured.stream().anyMatch(message -> message.contains("Unused import: collections")),
@@ -126,14 +122,10 @@ class SafeRuntimeTests {
 
     @Test
     void compileEmitsWarning(@TempDir final Path directory) throws Exception {
-      final var captured = capture();
+      final var captured = new ArrayList<String>();
       final var file = directory.resolve("testwarn.safe");
       Files.writeString(file, SOURCE);
-      try {
-        SafeRuntime.compile(SOURCE, file.toString(), false);
-      } finally {
-        SafeRuntime.resetWarnings();
-      }
+      SafeRuntime.compile(SOURCE, file.toString(), false, captured::add);
       assertTrue(
           captured.stream().anyMatch(message -> message.contains("Unused import: collections")),
           "compile() must surface the analyzer warning, got " + captured);
@@ -141,14 +133,10 @@ class SafeRuntimeTests {
 
     @Test
     void bytecodeEmitsWarning(@TempDir final Path directory) throws Exception {
-      final var captured = capture();
+      final var captured = new ArrayList<String>();
       final var file = directory.resolve("testwarn.safe");
       Files.writeString(file, SOURCE);
-      try {
-        SafeRuntime.bytecode(SOURCE, file.toString(), false);
-      } finally {
-        SafeRuntime.resetWarnings();
-      }
+      SafeRuntime.bytecode(SOURCE, file.toString(), false, captured::add);
       assertTrue(
           captured.stream().anyMatch(message -> message.contains("Unused import: collections")),
           "bytecode() must surface the analyzer warning, got " + captured);
@@ -156,14 +144,10 @@ class SafeRuntimeTests {
 
     @Test
     void wasmEmitsWarning(@TempDir final Path directory) throws Exception {
-      final var captured = capture();
+      final var captured = new ArrayList<String>();
       final var file = directory.resolve("testwarn.safe");
       Files.writeString(file, SOURCE);
-      try {
-        SafeRuntime.wasm(SOURCE, file.toString(), false);
-      } finally {
-        SafeRuntime.resetWarnings();
-      }
+      SafeRuntime.wasm(SOURCE, file.toString(), false, captured::add);
       assertTrue(
           captured.stream().anyMatch(message -> message.contains("Unused import: collections")),
           "wasm() must surface the analyzer warning, got " + captured);
@@ -172,16 +156,43 @@ class SafeRuntimeTests {
     @Test
     void noOpSinkSuppressesWarnings() {
       final var captured = new ArrayList<String>();
-      SafeRuntime.setWarnings(message -> {});
       final var originalOut = System.out;
       try {
         System.setOut(new PrintStream(new ByteArrayOutputStream()));
-        SafeRuntime.run(SOURCE, "testwarn.safe", List.of(), false);
+        SafeRuntime.run(SOURCE, "testwarn.safe", List.of(), false, message -> {});
       } finally {
         System.setOut(originalOut);
-        SafeRuntime.resetWarnings();
       }
       assertTrue(captured.isEmpty(), "silenced sink must not capture");
+    }
+
+    @Test
+    void concurrentSinksDoNotInterleave() throws Exception {
+      // Two threads compile the same warning-producing source with their own sinks. With the sink a
+      // per-call parameter (not static), each thread's warnings land only in its own list.
+      final var threads = 8;
+      final var pool = java.util.concurrent.Executors.newFixedThreadPool(threads);
+      try {
+        final var futures = new ArrayList<java.util.concurrent.Future<List<String>>>();
+        for (int t = 0; t < threads; t++) {
+          futures.add(
+              pool.submit(
+                  () -> {
+                    final var mine = new ArrayList<String>();
+                    SafeRuntime.run(SOURCE, "testwarn.safe", List.of(), false, mine::add);
+                    return mine;
+                  }));
+        }
+        for (final var future : futures) {
+          final var mine = future.get();
+          assertTrue(
+              mine.stream().allMatch(m -> m.contains("Unused import: collections")),
+              "each thread's sink must only hold its own warnings, got " + mine);
+          assertFalse(mine.isEmpty(), "each thread must capture its own warning");
+        }
+      } finally {
+        pool.shutdownNow();
+      }
     }
   }
 }

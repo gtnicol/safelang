@@ -41,6 +41,7 @@ public class BytecodeVM {
   private final Map<Long, List<SAFEValue>> sequences;
   private final Map<Integer, FileHandle> handles;
   private final Map<Integer, BinaryFileHandle> binaries;
+  private final Map<Integer, io.safelang.runtime.StreamHandle> streams;
   private final Map<String, Deque<Long>> measures = new HashMap<>();
   private final BuiltinExecutors builtins = new BuiltinExecutors();
   private final Map<String, Integer> lookup = new HashMap<>();
@@ -56,6 +57,20 @@ public class BytecodeVM {
   }
 
   public BytecodeVM(final BytecodeModule module, final List<String> arguments) {
+    this(module, arguments, io.safelang.runtime.HostPolicy.trusted());
+  }
+
+  public BytecodeVM(
+      final BytecodeModule module,
+      final List<String> arguments,
+      final io.safelang.runtime.Capabilities capabilities) {
+    this(module, arguments, io.safelang.runtime.HostPolicy.of(capabilities));
+  }
+
+  public BytecodeVM(
+      final BytecodeModule module,
+      final List<String> arguments,
+      final io.safelang.runtime.HostPolicy policy) {
     this.module = module;
     this.pool = module.pool();
     this.stack = new ArrayDeque<>();
@@ -66,10 +81,19 @@ public class BytecodeVM {
     this.sequences = new HashMap<>();
     this.handles = new HashMap<>();
     this.binaries = new HashMap<>();
+    this.streams = new HashMap<>();
     this.halted = false;
 
-    // Register host-specific globals (OS, ARCH, OS_VERSION)
-    globals.putAll(BuiltinRegistry.variables());
+    // Register system globals, skipping any whose capability this policy did not grant (the
+    // host-dependent OS/ARCH/OS_VERSION/PLATFORM require ENVIRONMENT), matching the interpreter.
+    BuiltinRegistry.variables()
+        .forEach(
+            (name, value) -> {
+              final var capability = BuiltinRegistry.variableCapability(name);
+              if (capability == null || policy.capabilities().granted(capability)) {
+                globals.put(name, value);
+              }
+            });
 
     // Register unit enum variants as globals
     for (final var info : module.enums()) {
@@ -89,7 +113,16 @@ public class BytecodeVM {
     final var scanner = new Scanner(System.in, StandardCharsets.UTF_8);
     final Random[] random = {new Random()};
     io.safelang.interpreter.builtins.BuiltinRegistration.registerAll(
-        builtins, () -> output, scanner, random, handles, binaries, counter, arguments);
+        builtins,
+        () -> output,
+        scanner,
+        random,
+        handles,
+        binaries,
+        streams,
+        counter,
+        arguments,
+        policy);
 
     // Build name-to-index lookup for user functions
     for (int i = 0; i < module.functions().size(); i++) {
@@ -120,6 +153,7 @@ public class BytecodeVM {
     final var frame = new CallFrame("__main__", 0, -1, module.locals());
     frames.add(frame);
 
+    io.safelang.runtime.HostCallback.set(this::apply);
     try {
       while (!halted && pc < bytecode.length) {
         step();
@@ -130,7 +164,70 @@ public class BytecodeVM {
   }
 
   private void cleanup() {
-    io.safelang.interpreter.builtins.BuiltinRegistration.closeHandles(handles, binaries);
+    io.safelang.runtime.HostCallback.clear();
+    io.safelang.interpreter.builtins.BuiltinRegistration.closeHandles(handles, binaries, streams);
+  }
+
+  /**
+   * Push a call frame for a closure value and switch the VM to its bytecode. Shared by the {@code
+   * CALL_VALUE} opcode (which then continues the main dispatch loop) and {@link #apply} (which runs
+   * a bounded nested loop until the frame returns).
+   */
+  private void pushClosureFrame(
+      final SAFEValue.FunctionValue functionValue, final SAFEValue[] args) {
+    final var closure = functionValue.asClosure();
+    reject(closure.name(), args);
+    final var position = lookup.getOrDefault(closure.name(), -1);
+    if (position < 0) {
+      throw new BytecodeException("Unknown closure target: " + closure.name());
+    }
+    final var info = module.function(position);
+    if (frames.size() >= MAX_DEPTH) {
+      throw new BytecodeException("Stack overflow: maximum call depth exceeded");
+    }
+    // The frame records the caller's pc/active so RETURN restores them.
+    frames.add(new CallFrame(info.name(), pc, active, info.locals()));
+    final var frame = frames.getLast();
+    for (int i = 0; i < args.length; i++) {
+      frame.setLocal(i, args[i]);
+    }
+    final var captured = closure.captures();
+    if (captured != null) {
+      for (int i = 0; i < captured.length; i++) {
+        frame.setLocal(info.parameters() + i, captured[i]);
+      }
+    }
+    requires(info);
+    decreases(info);
+    bytecode = info.bytecode();
+    pc = 0;
+    active = position;
+  }
+
+  /**
+   * Synchronously invoke a SAFE function value from host code (the {@link
+   * io.safelang.runtime.HostCallback} entry point used by {@code http:serve}). Sets up the callee
+   * frame, then steps a nested loop until that frame returns — leaving the result on the stack —
+   * before restoring the caller's dispatch state.
+   */
+  SAFEValue apply(final SAFEValue function, final java.util.List<SAFEValue> arguments) {
+    if (!(function instanceof SAFEValue.FunctionValue functionValue)) {
+      throw new BytecodeException("Cannot call non-function value: " + function.type());
+    }
+    final var args = arguments.toArray(new SAFEValue[0]);
+    final var savedBytecode = bytecode;
+    final var savedPc = pc;
+    final var savedActive = active;
+    pushClosureFrame(functionValue, args);
+    final var depth = frames.size();
+    while (frames.size() >= depth && !halted) {
+      step();
+    }
+    final var result = pop();
+    bytecode = savedBytecode;
+    pc = savedPc;
+    active = savedActive;
+    return result;
   }
 
   private void step() {
@@ -716,39 +813,7 @@ public class BytecodeVM {
           if (!(function instanceof SAFEValue.FunctionValue functionValue)) {
             throw new BytecodeException("Cannot call non-function value: " + function.type());
           }
-          final var closure = functionValue.asClosure();
-          reject(closure.name(), args);
-          // Look up the function by name via the precomputed lookup map.
-          final var target = closure.name();
-          final var position = lookup.getOrDefault(target, -1);
-          if (position < 0) {
-            throw new BytecodeException("Unknown closure target: " + target);
-          }
-          final var info = module.function(position);
-          if (frames.size() >= MAX_DEPTH) {
-            throw new BytecodeException("Stack overflow: maximum call depth exceeded");
-          }
-          // Save current state
-          frames.add(new CallFrame(info.name(), pc, active, info.locals()));
-          final var frame = frames.getLast();
-          // Set arguments as locals (slots 0..argc-1)
-          for (int i = 0; i < argc; i++) {
-            frame.setLocal(i, args[i]);
-          }
-          // Inject captured values into slots after parameters
-          final var captured = closure.captures();
-          if (captured != null) {
-            for (int i = 0; i < captured.length; i++) {
-              frame.setLocal(info.parameters() + i, captured[i]);
-            }
-          }
-          requires(info);
-          decreases(info);
-
-          // Switch to function bytecode
-          bytecode = info.bytecode();
-          pc = 0;
-          active = position;
+          pushClosureFrame(functionValue, args);
           break;
         }
 

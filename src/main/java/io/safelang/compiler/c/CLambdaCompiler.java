@@ -120,6 +120,21 @@ final class CLambdaCompiler {
             .append("__captures__[")
             .append(index)
             .append("] = __v__; }\n");
+      } else if (!context.isHeapRc(type)) {
+        // Non-heap pointer capture (notably `string` — a bare char* with no SAFEHeader). Store the
+        // pointer directly with NO retain: safe_retain would read a header 8 bytes before the
+        // buffer
+        // (heap-buffer-overflow). This mirrors the reader (lambda() treats strings as bare char*)
+        // and
+        // the bitmap loop, which already excludes non-heap types so dispose_closure never releases
+        // it.
+        context.pad(builder);
+        builder
+            .append("__captures__[")
+            .append(index)
+            .append("] = (void*)")
+            .append(capture)
+            .append(";\n");
       } else {
         // Heap-RC capture (list / map / set / bytes / recursive enum):
         // retain so the closure owns its own reference; dispose_closure

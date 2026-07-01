@@ -11,7 +11,7 @@ public final class WebAssemblyCompilerService implements SafeCompiler {
 
   @Override
   public SafeCompileResult compile(final CompileRequest request) throws Exception {
-    final var pipeline = new WasmPipeline(request.registry());
+    final var pipeline = new WasmPipeline(request.registry(), request.capabilities());
     final var compiled = pipeline.compile(request.program());
     final var directory = request.directory();
     SafeMain.extractWasmBuiltins(directory);

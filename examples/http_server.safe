@@ -1,0 +1,14 @@
+program http_server;
+import io;
+// Selective import: a plaintext server pulls neither libcurl nor OpenSSL in a native build.
+// (Use `import http;` if you also need the client or the TLS `serve_tls` variants.)
+import http { serve_until, response_with, Request, Response };
+
+// serve_until runs the accept loop until the stop predicate (given the number of requests
+// handled so far) returns true. The handler maps each Request to a Response (response_with
+// attaches custom headers). Here we serve exactly 3 requests, then return.
+io:println("serving on http://localhost:8080 (3 requests)");
+http:serve_until(8080,
+    fn(Request req) -> http:response_with(200, "you requested " + req.path + "\n", {"X-Served-By": "safe"}),
+    fn(n) -> n >= 3);
+io:println("done");

@@ -21,10 +21,13 @@ public final class JvmBackend {
       final ProgramNode program,
       final ModuleRegistry registry,
       final String base,
-      final Path output)
+      final Path output,
+      final io.safelang.runtime.Capabilities capabilities)
       throws IOException {
     final var className = sanitize(base);
-    final var bytes = new JvmCodeGenerator(className, registry).generate(program);
+    final var generator = new JvmCodeGenerator(className, registry);
+    generator.setCapabilities(capabilities);
+    final var bytes = generator.generate(program);
     new JarAssembler().assemble(output, className, Map.of(className, bytes));
     return className;
   }
